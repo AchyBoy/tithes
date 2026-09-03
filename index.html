@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tithes">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>%F0%9F%93%97</text></svg>">
+<title>Tithe Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --paper:#F7F5F0; --surface:#FFFDFA; --sunk:#EFEDE6;
+  --ink:#1B211F; --ink-2:#4A524E; --ink-3:#7C837E;
+  --line:#DFDBD1; --line-2:#EAE6DD;
+  --accent:#2E6E5B; --accent-soft:#DCEAE3;
+  --credit:#2E6E5B; --debit:#8C4A3A;
+  --park:#C0762A; --park-soft:#F7E7D2;
+  --look:#6B5A93; --look-soft:#E8E3F2;
+  --warn:#A33A2E;
+  --shadow:0 1px 2px rgba(27,33,31,.05), 0 8px 24px -12px rgba(27,33,31,.14);
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#131615; --surface:#1B201E; --sunk:#232825;
+    --ink:#E9E7E0; --ink-2:#AAB2AD; --ink-3:#7A827D;
+    --line:#2F3633; --line-2:#262C2A;
+    --accent:#63AC92; --accent-soft:#1E3129;
+    --credit:#63AC92; --debit:#D08A75;
+    --park:#D9944A; --park-soft:#3A2A17;
+    --look:#A492D0; --look-soft:#282243;
+    --warn:#E0705E;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#131615; --surface:#1B201E; --sunk:#232825;
+  --ink:#E9E7E0; --ink-2:#AAB2AD; --ink-3:#7A827D;
+  --line:#2F3633; --line-2:#262C2A;
+  --accent:#63AC92; --accent-soft:#1E3129;
+  --credit:#63AC92; --debit:#D08A75;
+  --park:#D9944A; --park-soft:#3A2A17;
+  --look:#A492D0; --look-soft:#282243;
+  --warn:#E0705E;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:"Public Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+.num{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums}
+button{font:inherit; color:inherit; cursor:pointer}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+
+.wrap{max-width:1180px; margin:0 auto; padding:0 20px 80px}
+
+/* ---------- masthead ---------- */
+header{padding:34px 0 0}
+.brand{display:flex; align-items:baseline; justify-content:space-between; gap:20px; flex-wrap:wrap}
+h1{
+  font-family:Newsreader,Georgia,serif; font-weight:500; font-size:31px;
+  margin:0; letter-spacing:-.01em;
+}
+h1 em{font-style:italic; color:var(--accent)}
+.acts{display:flex; gap:8px; flex-wrap:wrap}
+.btn{
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+  padding:7px 13px; font-size:13.5px; font-weight:500; color:var(--ink-2);
+  transition:border-color .15s, color .15s;
+}
+.btn:hover{border-color:var(--ink-3); color:var(--ink)}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.btn.primary:hover{filter:brightness(1.08); color:#fff}
+
+/* ---------- month rail ---------- */
+.months{
+  display:flex; gap:2px; margin:22px 0 0; padding-bottom:2px;
+  overflow-x:auto; border-bottom:1px solid var(--line);
+}
+.mtab{
+  background:none; border:0; border-bottom:2px solid transparent;
+  padding:9px 14px 10px; white-space:nowrap; color:var(--ink-3);
+  font-size:14px; font-weight:500; letter-spacing:.01em;
+}
+.mtab:hover{color:var(--ink)}
+.mtab[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--accent)}
+.mtab small{display:block; font-size:11px; font-weight:400; color:var(--ink-3); letter-spacing:.02em}
+
+/* ---------- summary ---------- */
+.summary{
+  display:grid; gap:1px; background:var(--line-2);
+  grid-template-columns:1.5fr 1fr 1fr 1fr; margin:26px 0 0;
+  border:1px solid var(--line-2); border-radius:var(--r); overflow:hidden;
+}
+.cell{background:var(--surface); padding:16px 18px 17px}
+.cell .k{
+  font-size:10.5px; text-transform:uppercase; letter-spacing:.09em;
+  color:var(--ink-3); font-weight:600; margin-bottom:7px;
+}
+.cell .v{font-size:20px; font-weight:500; letter-spacing:-.01em}
+.owed{background:var(--accent-soft)}
+.owed .k{color:var(--accent)}
+.owed .v{font-family:Newsreader,Georgia,serif; font-size:34px; font-weight:500; color:var(--accent); line-height:1.05}
+.owed .sub{font-size:12px; color:var(--ink-2); margin-top:5px}
+.pos{color:var(--credit)} .neg{color:var(--debit)}
+
+.drift{
+  margin-top:10px; padding:9px 13px; border-radius:var(--r); font-size:13px;
+  background:var(--park-soft); color:var(--ink); border:1px solid var(--park);
+  display:flex; gap:9px; align-items:flex-start;
+}
+.drift b{font-weight:600}
+
+/* ---------- toolbar ---------- */
+.bar{display:flex; gap:10px; align-items:center; margin:22px 0 12px; flex-wrap:wrap}
+.search{
+  flex:1; min-width:220px; display:flex; align-items:center; gap:9px;
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:0 12px;
+}
+.search input{
+  flex:1; border:0; background:none; padding:10px 0; font:inherit; color:var(--ink);
+}
+.search input:focus{outline:none}
+.search svg{flex:none; opacity:.45}
+.chips{display:flex; gap:5px; flex-wrap:wrap}
+.chip{
+  background:var(--surface); border:1px solid var(--line); border-radius:99px;
+  padding:6px 12px; font-size:12.5px; font-weight:500; color:var(--ink-2);
+}
+.chip[aria-pressed="true"]{background:var(--ink); border-color:var(--ink); color:var(--paper)}
+.count{font-size:12.5px; color:var(--ink-3); margin-left:auto}
+
+/* ---------- ledger ---------- */
+.scroll{
+  overflow-x:auto; border:1px solid var(--line); border-radius:var(--r);
+  background:var(--surface); box-shadow:var(--shadow);
+}
+table{border-collapse:collapse; width:100%; min-width:820px}
+th{
+  text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.08em;
+  color:var(--ink-3); font-weight:600; padding:11px 12px;
+  border-bottom:1px solid var(--line); background:var(--sunk);
+  position:sticky; top:0; z-index:1;
+}
+td{padding:9px 12px; border-bottom:1px solid var(--line-2); font-size:13.5px; vertical-align:top}
+tr:last-child td{border-bottom:0}
+.r-amt,.r-cnt{text-align:right; white-space:nowrap}
+.r-date{white-space:nowrap; color:var(--ink-2)}
+.r-type{color:var(--ink-3); font-size:12.5px; white-space:nowrap}
+.r-desc{min-width:230px}
+tr.parked td{background:var(--park-soft)}
+tr.parked .r-desc,tr.parked .r-amt{text-decoration:line-through; opacity:.72}
+tr.look td{background:var(--look-soft)}
+.tag{
+  display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px;
+  font-weight:600; letter-spacing:.01em; white-space:nowrap;
+  background:var(--sunk); color:var(--ink-2);
+}
+.tag.on{background:var(--accent-soft); color:var(--accent)}
+.tag.off{background:var(--park-soft); color:var(--park)}
+.tag.look{background:var(--look-soft); color:var(--look)}
+.tog{
+  width:19px; height:19px; border-radius:5px; border:1.5px solid var(--line);
+  background:var(--surface); display:grid; place-items:center; padding:0; color:var(--park);
+}
+.tog:hover{border-color:var(--park)}
+.tog[aria-pressed="true"]{background:var(--park); border-color:var(--park); color:#fff}
+.empty{padding:44px 20px; text-align:center; color:var(--ink-3); font-size:14px}
+mark{background:var(--accent-soft); color:inherit; border-radius:3px; padding:0 2px}
+
+/* ---------- panel ---------- */
+.scrim{
+  position:fixed; inset:0; background:rgba(20,24,22,.45); backdrop-filter:blur(2px);
+  display:grid; place-items:center; padding:20px; z-index:50;
+}
+.panel{
+  background:var(--surface); border:1px solid var(--line); border-radius:14px;
+  width:min(780px,100%); max-height:88vh; overflow:auto; box-shadow:var(--shadow);
+}
+.phead{
+  display:flex; justify-content:space-between; align-items:center; gap:14px;
+  padding:18px 22px; border-bottom:1px solid var(--line-2); position:sticky; top:0;
+  background:var(--surface);
+}
+.phead h2{font-family:Newsreader,Georgia,serif; font-weight:500; font-size:21px; margin:0}
+.pbody{padding:20px 22px 24px}
+.hint{font-size:13px; color:var(--ink-2); margin:0 0 12px}
+textarea{
+  width:100%; min-height:190px; resize:vertical; padding:12px;
+  border:1px solid var(--line); border-radius:var(--r); background:var(--paper);
+  color:var(--ink); font-family:"IBM Plex Mono",monospace; font-size:12px; line-height:1.55;
+}
+textarea:focus{outline:none; border-color:var(--accent)}
+.readout{
+  margin-top:14px; border:1px solid var(--line); border-radius:var(--r);
+  padding:14px 16px; background:var(--paper); font-size:13.5px;
+}
+.readout .row{display:flex; justify-content:space-between; gap:16px; padding:3px 0}
+.readout .row span:last-child{font-family:"IBM Plex Mono",monospace}
+.ok{color:var(--accent); font-weight:600}
+.bad{color:var(--warn); font-weight:600}
+.pfoot{display:flex; justify-content:flex-end; gap:9px; margin-top:16px}
+
+.rule{border-bottom:1px solid var(--line-2); padding:14px 0}
+.rule:last-child{border-bottom:0}
+.rule h3{margin:0 0 3px; font-size:14px; font-weight:600}
+.rule p{margin:0 0 9px; font-size:12.5px; color:var(--ink-3)}
+.keys{display:flex; flex-wrap:wrap; gap:5px; align-items:center}
+.key{
+  display:inline-flex; align-items:center; gap:6px; background:var(--sunk);
+  border:1px solid var(--line); border-radius:99px; padding:3px 5px 3px 10px;
+  font-family:"IBM Plex Mono",monospace; font-size:11.5px;
+}
+.key button{border:0; background:none; padding:0 3px; color:var(--ink-3); line-height:1; font-size:14px}
+.key button:hover{color:var(--warn)}
+.addkey{
+  border:1px dashed var(--line); background:none; border-radius:99px; padding:4px 11px;
+  font-size:11.5px; color:var(--ink-3);
+}
+.addkey:hover{border-color:var(--accent); color:var(--accent)}
+.note{font-size:12.5px; color:var(--ink-3); margin:18px 0 0; line-height:1.6}
+.offline{
+  margin:26px 0; padding:14px 16px; border:1px solid var(--line); border-radius:var(--r);
+  background:var(--surface); color:var(--ink-2); font-size:13.5px;
+}
+
+/* ---------- lock ---------- */
+.gate{min-height:62vh; display:grid; place-items:center; padding:30px 0}
+.lockbox{
+  width:min(380px,100%); background:var(--surface); border:1px solid var(--line);
+  border-radius:14px; padding:28px 26px 24px; box-shadow:var(--shadow); text-align:left;
+}
+.lockbox h2{
+  font-family:Newsreader,Georgia,serif; font-weight:500; font-size:22px; margin:0 0 5px;
+}
+.lockbox p{margin:0 0 18px; font-size:13.5px; color:var(--ink-2); line-height:1.55}
+.lockbox label{
+  display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em;
+  color:var(--ink-3); font-weight:600; margin-bottom:6px;
+}
+.lockbox input[type="password"]{
+  width:100%; padding:11px 13px; border:1px solid var(--line); border-radius:var(--r);
+  background:var(--paper); color:var(--ink); font:inherit; letter-spacing:.06em;
+}
+.lockbox input[type="password"]:focus{outline:none; border-color:var(--accent)}
+.lockbox .btn.primary{width:100%; margin-top:14px; padding:11px}
+.lockbox .err{color:var(--warn); font-size:13px; margin:11px 0 0; font-weight:500}
+.lockbox .fine{font-size:11.5px; color:var(--ink-3); margin:16px 0 0; line-height:1.55}
+.hidden-user{position:absolute; left:-9999px; width:1px; height:1px; opacity:0}
+@media (max-width:860px){
+  .summary{grid-template-columns:1fr 1fr}
+  .owed{grid-column:1/-1}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>Tithe <em>Ledger</em></h1>
+      <div class="acts">
+        <button class="btn" id="btnLock">Lock</button>
+        <button class="btn" id="btnPw">Password</button>
+        <button class="btn" id="btnRules">Rules</button>
+        <button class="btn primary" id="btnPaste">Paste a month</button>
+      </div>
+    </div>
+    <div class="months" id="months" role="tablist"></div>
+  </header>
+  <main id="main"></main>
+</div>
+
+<script>
+"use strict";
+
+/* ============ defaults: the rules, ported from the Apps Script ============ */
+const DEFAULT_RULES = {
+  subs:  ["google workspace","claude","anthropic","railway","companycam","expo.dev"],
+  vendor:["stine","elliott electric","notoco","basic supply","comeaux bowers wague",
+          "amazon mktpl","lowe's","home depot","o'reilly","hyphen solutions","bridge storage",
+          "openai","supabase","amazon.com","vidrines","thibodeaux electric","mailgun",
+          "building code inspect","govolution","lcg development","tesla supercharger","google *play"],
+  ew:    ["direct checks unlimited","ally payment","alliant cu","citi card online payment",
+          "lci premium trust","lowes payment","chase credit","ipfs"],
+  half:  ["at&t payment","la farm bureau insurance"],
+  review:["ring.com","ring solo","cox","starlink","moses tv","city of opelousas","paystar",
+          "meshy","apple.com/bill","guitarcenter","doug young nursery","target.com"]
+};
+const RULE_META = {
+  subs:  {name:"Recurring subscriptions", why:"Deducted in full. Matches only rows typed Recurring Card Purchase."},
+  vendor:{name:"Vendor purchases",        why:"Deducted in full. Matches Card Purchase and Card Purchase With Pin."},
+  ew:    {name:"Electronic withdrawals",  why:"Deducted in full. Matches only rows typed Electronic Withdrawal."},
+  half:  {name:"Half rule",               why:"Half the amount is deducted. Part business, part personal."},
+  review:{name:"Flag for a look",         why:"Never deducted. Highlighted so you can decide each month."}
+};
+
+/* ============ classify one row — same order of tests as the script ============ */
+function classify(row, R){
+  const t = row.t || "", d = (row.c || "").toLowerCase(), a = Number(row.a) || 0;
+  const hit = list => (R[list] || []).some(k => d.includes(k));
+  if (row.x)                                            return {f:0, rule:"Excluded",  kind:"off"};
+  if (t === "Check Paid")                               return {f:-Math.abs(a), rule:"Check paid", kind:"on"};
+  if (t === "Deposit" || t === "Refund")                return {f:a, rule:"Deposit", kind:"on"};
+  if (t === "Recurring Card Purchase" && hit("subs"))   return {f:-Math.abs(a), rule:"Subscription", kind:"on"};
+  if ((t === "Card Purchase" || t === "Card Purchase With Pin") && hit("vendor"))
+                                                        return {f:-Math.abs(a), rule:"Vendor", kind:"on"};
+  if (t === "Electronic Withdrawal" && hit("ew"))       return {f:-Math.abs(a), rule:"Withdrawal", kind:"on"};
+  if (t === "Electronic Withdrawal" && d.includes("paypal / ebay") && Math.abs(a) > 45)
+                                                        return {f:-Math.abs(a), rule:"PayPal/eBay", kind:"on"};
+  if (d.includes("apple cash"))                         return {f:-Math.abs(a), rule:"Apple Cash", kind:"on"};
+  if (t === "Electronic Withdrawal" && hit("half"))     return {f:-Math.abs(a)/2, rule:"Half rule", kind:"on"};
+  if (t === "Fee" && d.includes("monthly service fee")) return {f:-Math.abs(a), rule:"Monthly fee", kind:"on"};
+  if (hit("review"))                                    return {f:0, rule:"Take a look", kind:"look"};
+  return {f:0, rule:"", kind:""};
+}
+
+function totals(rows, R){
+  let income = 0, out = 0, base = 0;
+  for (const row of rows){
+    const c = classify(row, R);
+    base += c.f;
+    if (row.x) continue;
+    const a = Number(row.a) || 0;
+    if (row.t === "Deposit" || row.t === "Refund") income += Math.abs(a);
+    else if (a) out += Math.abs(a);
+  }
+  return {income, out, base, owed: base * 0.1};
+}
+
+/* ============ read a Chase export ============ */
+function splitCSV(line){
+  const out = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++){
+    const ch = line[i];
+    if (q){
+      if (ch === '"'){ if (line[i+1] === '"'){ cur += '"'; i++; } else q = false; }
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") { out.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+const ACH = [
+  ["ANDRIES BUILDERS","Andries Builders \u2013 ACH (Foch Electrical CCD)"],
+  ["CITI CARD ONLINE","Citi Card Online Payment"],
+  ["CHASE CREDIT CRD","Chase Credit Crd Autopay"],
+  ["ALLIANT CU","Alliant CU \u2013 Dep-Pymt"],
+  ["ALLY","Ally Payment"],
+  ["IPFS","IPFS800-247-6129"],
+  ["LCI PREM TRUST","LCI Premium Trust \u2013 Corp Coll"],
+  ["LOWES","Lowes Payment"],
+  ["LA FARM BUREAU","LA Farm Bureau Insurance"],
+  ["ATT ","AT&T Payment"],
+  ["IRS","IRS"],
+  ["LOUISIANA REVEN","LOUISIANA REVEN"],
+  ["SBA LOAN","SBA Loan Payment"],
+  ["TD AUTO FINANCE","TD Auto Finance \u2013 Web Pay"],
+  ["NORTHWESTERN MU","NORTHWESTERN MU"],
+  ["NATIONAL RECOVER","National Recover"],
+  ["SANTANDER","SANTANDER"],
+  ["PLANET CONSTRUCT","Planet Construct \u2013 ACH (Foch Electrical CCD)"],
+  ["STRIPE","Stripe \u2013 Transfer"]
+];
+const SUBS_DESC = [["GOOGLE *WORKSPACE","Google Workspace"],["ANTHROPIC","Anthropic / Claude Subscription"],
+                   ["RAILWAY","Railway \u2013 Railway.com"],["COMPANYCAM","CompanyCam"],
+                   ["650 INDUSTRIES","650 Industries (Expo) \u2013 Expo.dev"]];
+
+function tidy(s){
+  return s.replace(/\s+\d{2}\/\d{2}$/,"").replace(/\s+\d{6}\s*$/,"").replace(/\s+/g," ").trim();
+}
+
+function parseExport(text){
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const out = [], problems = [];
+  let chain = null, breaks = 0, checked = 0;
+  const prev = [];
+
+  for (const line of lines){
+    const f = splitCSV(line);
+    if (f.length < 5) continue;
+    if (/^details$/i.test(f[0]) || /posting date/i.test(f[1] || "")) continue;
+    const m = (f[1] || "").match(/^(\d{2})\/(\d{2})/);
+    if (!m) continue;
+    const amt = parseFloat((f[3] || "").replace(/[$,]/g,""));
+    if (!isFinite(amt)) continue;
+
+    const kind = (f[4] || "").toUpperCase();
+    const raw  = f[2] || "";
+    const U    = raw.toUpperCase();
+    let type = "Card Purchase", desc = tidy(raw);
+
+    if (kind === "FEE_TRANSACTION")      { type = "Fee"; desc = "Monthly Service Fee"; }
+    else if (kind === "ACCT_XFER")       { type = "Online Transfer"; desc = tidy(raw.replace(/\s*transaction#.*/i,"")); }
+    else if (kind === "CHECK_PAID")      { type = "Check Paid"; }
+    else if (kind === "ATM")             { type = "ATM Withdrawal"; desc = "ATM Withdrawal"; }
+    else if (kind === "ATM_DEPOSIT")     { type = "Deposit"; desc = "ATM Check Deposit \u2013 " + tidy(raw.replace(/^ATM CHECK DEPOSIT\s*\d{2}\/\d{2}\s*/i,"")); }
+    else if (kind === "ACH_DEBIT" || kind === "ACH_CREDIT"){
+      type = kind === "ACH_CREDIT" ? "Deposit" : "Electronic Withdrawal";
+      desc = null;
+      if (U.includes("PAYPAL")) desc = U.includes("EBAY") ? "PayPal / eBay" : "PayPal \u2013 Transfer";
+      else for (const [k,v] of ACH) if (U.includes(k)){ desc = v; break; }
+      if (!desc) desc = tidy(raw.replace(/ORIG CO NAME:/i,"").replace(/ORIG ID:.*/i,""));
+    } else {
+      if (U.includes("APPLE CASH")) desc = "Apple Cash Sent Money";
+      for (const [k,v] of SUBS_DESC) if (U.includes(k)){ type = "Recurring Card Purchase"; desc = v; break; }
+    }
+
+    out.push({d:m[1] + "/" + m[2], t:type, c:desc, a:Math.round(amt*100)/100, x:0});
+
+    const bal = parseFloat((f[5] || "").replace(/[$,]/g,""));
+    if (isFinite(bal)) prev.push({bal, amt});
+  }
+
+  for (let i = 0; i < prev.length - 1; i++){
+    checked++;
+    if (Math.abs((prev[i+1].bal + prev[i].amt) - prev[i].bal) > 0.005) breaks++;
+  }
+  chain = checked ? {checked, breaks} : null;
+
+  // deposits first, then everything else, each in date order — matching the sheet
+  const key = r => Number(r.d.slice(0,2)) * 100 + Number(r.d.slice(3));
+  const dep = out.filter(r => r.t === "Deposit").sort((a,b) => key(a)-key(b));
+  const rest= out.filter(r => r.t !== "Deposit").sort((a,b) => key(a)-key(b));
+  return {rows:[...dep, ...rest], chain, problems};
+}
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function guessMonth(rows){
+  const tally = {};
+  rows.forEach(r => { const m = r.d.slice(0,2); tally[m] = (tally[m]||0)+1; });
+  const mm = Object.keys(tally).sort((a,b) => tally[b]-tally[a])[0] || "01";
+  const now = new Date(), yr = now.getFullYear();
+  return {mm, yr};
+}
+
+/* ============ state ============ */
+const API = "https://api.jobhubgo.com/api/tithes";
+const money = n => (n < 0 ? "-" : "") + "$" + Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2});
+const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, q:"", filter:"all", all:false,
+           locked:true, ready:false, offline:false};
+const $ = s => document.querySelector(s);
+
+/* ---------- the key to the back door ---------- */
+function token(){ try { return localStorage.getItem("tl.token") || ""; } catch(e){ return ""; } }
+function setToken(t){
+  try { t ? localStorage.setItem("tl.token", t) : localStorage.removeItem("tl.token"); } catch(e){}
+}
+
+/**
+ * Every call to the backend. Throws an Error carrying the server's own words,
+ * so the thing the page shows is the thing that actually went wrong.
+ */
+async function api(path, opts = {}){
+  const res = await fetch(API + path, {
+    method: opts.method || "GET",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token() ? {Authorization: "Bearer " + token()} : {})
+    },
+    ...(opts.body ? {body: JSON.stringify(opts.body)} : {})
+  });
+  let data = null;
+  try { data = await res.json(); } catch(e){}
+  if (res.status === 401 && path !== "/unlock" && !path.startsWith("/reset")){
+    setToken(""); S.locked = true; render();
+    throw new Error("Locked");
+  }
+  if (!res.ok) throw new Error((data && data.error) || ("Something went wrong (" + res.status + ")"));
+  return data || {};
+}
+
+async function loadAll(){
+  const [m, r] = await Promise.all([api("/months"), api("/config/rules")]);
+  S.months = (m.months || []).map(x => ({id:x.key, key:x.key, label:x.label, rows:x.rows || []}));
+  if (r && r.rules) S.rules = {...DEFAULT_RULES, ...r.rules};
+  if (!S.cur || !S.months.some(x => x.id === S.cur)) S.cur = S.months[0]?.id || null;
+}
+
+async function boot(){
+  render();
+  if (!token()){ S.ready = true; S.locked = true; return render(); }
+  try {
+    await api("/ping");
+    await loadAll();
+    S.locked = false;
+  } catch(e){
+    if (e.message !== "Locked"){ S.offline = true; }
+    S.locked = true;
+  }
+  S.ready = true;
+  render();
+}
+
+/* ============ render ============ */
+function renderGate(){
+  $("#months").innerHTML = "";
+  $(".acts").style.display = "none";
+  $("#main").innerHTML = `
+    <div class="gate"><form class="lockbox" id="lockform" autocomplete="on">
+      <h2>Tithe Ledger</h2>
+      <p>${S.offline
+        ? "Couldn&rsquo;t reach the ledger just now. Check your connection and try again."
+        : "Enter your password to open it."}</p>
+      <input class="hidden-user" type="text" name="username" autocomplete="username"
+             value="tithe-ledger" readonly tabindex="-1" aria-hidden="true">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" name="password" required autocomplete="current-password"
+             autofocus placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;">
+      <button class="btn primary" type="submit">Unlock</button>
+      <p class="err" id="err" hidden></p>
+      <p class="fine"><button type="button" class="btn" id="forgot" style="margin-top:4px">Forgot it</button></p>
+    </form></div>`;
+
+  $("#lockform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const err = $("#err"); err.hidden = true;
+    const btn = $("#lockform button[type=submit]");
+    btn.disabled = true; btn.textContent = "Checking\u2026";
+    try {
+      const r = await api("/unlock", {method:"POST", body:{password: $("#pw").value}});
+      setToken(r.token);
+      await loadAll();
+      S.locked = false; S.offline = false; render();
+    } catch(ex){
+      err.hidden = false; err.textContent = ex.message;
+      btn.disabled = false; btn.textContent = "Unlock";
+      $("#pw").select();
+    }
+  });
+
+  $("#forgot").addEventListener("click", () => resetPanel());
+}
+
+/**
+ * Forgot it. A code goes to andrew@fochelc.com and gets swapped for a new
+ * password, the same shape as a warranty access code.
+ */
+function resetPanel(){
+  const s = panel("Reset the password", `
+    <p class="hint">We&rsquo;ll email a six digit code to <b>andrew@fochelc.com</b>.
+      Enter it below with the password you want from now on.</p>
+    <div class="pfoot" id="sendrow" style="justify-content:flex-start">
+      <button class="btn primary" id="send">Email me a code</button>
+    </div>
+    <form id="rform" autocomplete="on" hidden>
+      <p class="hint" id="sent"></p>
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3);font-weight:600;margin-bottom:6px">Code from the email</label>
+      <input id="code" inputmode="numeric" autocomplete="one-time-code" required maxlength="6"
+             style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:17px;letter-spacing:.22em;text-align:center">
+      <label style="display:block;margin-top:14px;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3);font-weight:600;margin-bottom:6px">New password</label>
+      <input class="hidden-user" type="text" name="username" autocomplete="username" value="tithe-ledger" readonly tabindex="-1" aria-hidden="true">
+      <input id="rnp" type="password" name="password" autocomplete="new-password" required
+             style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit;letter-spacing:.06em">
+      <p class="err" id="rerr" hidden></p>
+      <div class="pfoot">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit">Set it and open</button>
+      </div>
+    </form>`);
+
+  s.querySelector("#send").addEventListener("click", async e => {
+    const b = e.target; b.disabled = true; b.textContent = "Sending\u2026";
+    try {
+      const r = await api("/reset/request", {method:"POST", body:{}});
+      s.querySelector("#sendrow").hidden = true;
+      const f = s.querySelector("#rform"); f.hidden = false;
+      s.querySelector("#sent").innerHTML = `Sent to <b>${r.sentTo || "your inbox"}</b>. It works for twenty minutes.`;
+      s.querySelector("#code").focus();
+    } catch(ex){
+      b.disabled = false; b.textContent = "Email me a code";
+      alert(ex.message);
+    }
+  });
+
+  s.querySelector("#rform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const err = s.querySelector("#rerr"); err.hidden = true;
+    try {
+      const r = await api("/reset/confirm", {method:"POST", body:{
+        code: s.querySelector("#code").value.trim(),
+        password: s.querySelector("#rnp").value
+      }});
+      setToken(r.token);
+      await loadAll();
+      S.locked = false; S.offline = false; s.remove(); render();
+    } catch(ex){ err.hidden = false; err.textContent = ex.message; }
+  });
+}
+
+/* change the password, from the unlocked page */
+function passwordPanel(){
+  const s = panel("Password", `
+    <p class="hint">Type a new one and save. Your phone will offer to update what it remembered,
+      so Face&nbsp;ID keeps working.</p>
+    <form id="pwform" autocomplete="on">
+      <input class="hidden-user" type="text" name="username" autocomplete="username"
+             value="tithe-ledger" readonly tabindex="-1" aria-hidden="true">
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3);font-weight:600;margin-bottom:6px">New password</label>
+      <input id="np" type="password" name="password" autocomplete="new-password" required
+             style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit;letter-spacing:.06em">
+      <p class="err" id="perr" hidden></p>
+      <div class="pfoot">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit">Change it</button>
+      </div>
+    </form>`);
+  s.querySelector("#pwform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const pw = s.querySelector("#np").value, err = s.querySelector("#perr");
+    if (pw.length < 4){ err.hidden = false; err.textContent = "Use at least four characters."; return; }
+    try { await api("/password", {method:"PUT", body:{password:pw}}); }
+    catch(ex){ err.hidden = false; err.textContent = ex.message; return; }
+    s.remove();
+  });
+}
+
+function render(){
+  if (!S.ready) return;
+  if (S.locked){ renderGate(); return; }
+  $(".acts").style.display = "";
+  renderMonths();
+  const main = $("#main");
+  if (S.offline && !S.months.length){
+    main.innerHTML = '<div class="offline">Couldn&rsquo;t reach the ledger just now. Reload in a moment.</div>';
+    return;
+  }
+  const m = S.months.find(x => x.id === S.cur);
+  if (!m){
+    main.innerHTML = '<div class="offline">No months yet. Choose <b>Paste a month</b> and drop in a Chase export.</div>';
+    return;
+  }
+  const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label}))) : m.rows;
+  const t = totals(S.all ? rows : m.rows, S.rules);
+
+  const drift = (!S.all && m.sheet && m.sheet.F2 != null && Math.abs(m.sheet.F2 - t.base) > 0.005)
+    ? `<div class="drift"><b>Heads up.</b><span>The spreadsheet recorded a tithe base of
+        <b class="num">${money(m.sheet.F2)}</b> for this month. These rules produce
+        <b class="num">${money(t.base)}</b>, a difference of
+        <b class="num">${money(t.base - m.sheet.F2)}</b>. Either a rule changed since, or a row is excluded here that wasn&rsquo;t there.</span></div>`
+    : "";
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed">
+        <div class="k">Tithes owed${S.all ? " · all months" : ""}</div>
+        <div class="v num">${money(t.owed)}</div>
+        <div class="sub">10% of ${money(t.base)}</div>
+      </div>
+      <div class="cell"><div class="k">Income</div><div class="v num pos">${money(t.income)}</div></div>
+      <div class="cell"><div class="k">Money out</div><div class="v num neg">${money(t.out)}</div></div>
+      <div class="cell"><div class="k">Counted toward tithe</div><div class="v num">${money(t.base)}</div></div>
+    </section>
+    ${drift}
+    <div class="bar">
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="q" type="search" placeholder="Search ${S.all ? "every month" : m.label}&hellip;" value="${esc(S.q)}">
+      </label>
+      <div class="chips">
+        ${chip("all","Everything")}${chip("on","Counted")}${chip("zero","Not counted")}
+        ${chip("off","Excluded")}${chip("look","Flagged")}
+      </div>
+      <button class="chip" id="allMonths" aria-pressed="${S.all}">All months</button>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>Date</th><th>Type</th><th>Description</th>
+        <th class="r-amt">Amount</th><th class="r-cnt">Counted</th><th>Rule</th><th></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>`;
+
+  $("#q").addEventListener("input", e => { S.q = e.target.value; renderRows(); });
+  $("#allMonths").addEventListener("click", () => { S.all = !S.all; render(); });
+  document.querySelectorAll("[data-filter]").forEach(b =>
+    b.addEventListener("click", () => { S.filter = b.dataset.filter; render(); }));
+  renderRows();
+}
+
+const chip = (id,label) =>
+  `<button class="chip" data-filter="${id}" aria-pressed="${S.filter===id}">${label}</button>`;
+const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function hl(text, q){
+  const s = esc(text);
+  if (!q) return s;
+  const i = s.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return s;
+  return s.slice(0,i) + "<mark>" + s.slice(i, i+q.length) + "</mark>" + s.slice(i+q.length);
+}
+
+function renderRows(){
+  const m = S.months.find(x => x.id === S.cur);
+  if (!m) return;
+  const src = S.all ? S.months.flatMap(x => x.rows.map((r,i) => ({...r, _m:x.label, _id:x.id, _i:i})))
+                    : m.rows.map((r,i) => ({...r, _id:m.id, _i:i}));
+  const q = S.q.trim().toLowerCase();
+  const list = src.filter(r => {
+    const c = classify(r, S.rules);
+    if (S.filter === "on"   && c.kind !== "on")   return false;
+    if (S.filter === "off"  && !r.x)              return false;
+    if (S.filter === "look" && c.kind !== "look") return false;
+    if (S.filter === "zero" && (c.f !== 0 || r.x || c.kind === "look")) return false;
+    if (q && !(r.c + " " + r.t + " " + r.d).toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  const body = $("#rows");
+  if (!list.length){
+    body.innerHTML = `<tr><td colspan="7" class="empty">Nothing matches that.</td></tr>`;
+  } else {
+    body.innerHTML = list.map(r => {
+      const c = classify(r, S.rules);
+      const cls = r.x ? "parked" : (c.kind === "look" ? "look" : "");
+      const tag = c.rule
+        ? `<span class="tag ${c.kind === "on" ? "on" : c.kind === "look" ? "look" : "off"}">${esc(c.rule)}</span>`
+        : "";
+      return `<tr class="${cls}">
+        <td class="r-date num">${esc(r.d)}${S.all ? `<br><small style="color:var(--ink-3)">${esc(r._m)}</small>` : ""}</td>
+        <td class="r-type">${esc(r.t)}</td>
+        <td class="r-desc">${hl(r.c, q)}</td>
+        <td class="r-amt num ${r.a < 0 ? "neg" : "pos"}">${money(r.a)}</td>
+        <td class="r-cnt num">${c.f ? money(c.f) : '<span style="color:var(--ink-3)">—</span>'}</td>
+        <td>${tag}</td>
+        <td><button class="tog" aria-pressed="${!!r.x}" data-m="${r._id}" data-i="${r._i}"
+             title="${r.x ? "Put back in" : "Leave this one out"}">${r.x ? "✕" : ""}</button></td>
+      </tr>`;
+    }).join("");
+    body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => toggle(b.dataset.m, +b.dataset.i)));
+  }
+  const c = $(".count"); if (c) c.remove();
+  $(".bar").insertAdjacentHTML("beforeend",
+    `<span class="count">${list.length} of ${src.length} rows</span>`);
+}
+
+function renderMonths(){
+  const el = $("#months");
+  el.innerHTML = S.months.map(m => {
+    const t = totals(m.rows, S.rules);
+    return `<button class="mtab" role="tab" aria-selected="${m.id===S.cur && !S.all}" data-id="${m.id}">
+      ${esc(m.label)}<small>${money(t.owed)}</small></button>`;
+  }).join("");
+  el.querySelectorAll(".mtab").forEach(b =>
+    b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
+}
+
+async function toggle(monthId, i){
+  const m = S.months.find(x => x.id === monthId);
+  if (!m) return;
+  const before = m.rows;
+  const rows = m.rows.map((r,k) => k === i ? {...r, x: r.x ? 0 : 1} : r);
+  m.rows = rows;
+  render();
+  try { await api("/months/" + monthId, {method:"PUT", body:{label:m.label, rows}}); }
+  catch(e){
+    m.rows = before; render();          // put it back rather than lie about it
+    if (e.message !== "Locked") alert("That change didn't save. " + e.message);
+  }
+}
+
+/* ============ panels ============ */
+function panel(title, inner){
+  const s = document.createElement("div");
+  s.className = "scrim";
+  s.innerHTML = `<div class="panel" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    <div class="phead"><h2>${esc(title)}</h2><button class="btn" data-close>Close</button></div>
+    <div class="pbody">${inner}</div></div>`;
+  s.addEventListener("click", e => { if (e.target === s || e.target.hasAttribute("data-close")) s.remove(); });
+  document.body.appendChild(s);
+  return s;
+}
+
+$("#btnPaste").addEventListener("click", () => {
+  const s = panel("Paste a month", `
+    <p class="hint">Download the activity from Chase and paste it here, header row and all.
+      Nothing is saved until you say so.</p>
+    <textarea id="ta" spellcheck="false" placeholder="Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #&#10;DEBIT,07/31/2026,&quot;MONTHLY SERVICE FEE&quot;,-7.50,FEE_TRANSACTION,20344.93,,"></textarea>
+    <div id="out"></div>
+    <div class="pfoot" id="foot1">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn" id="read">Read it</button>
+    </div>`);
+  const ta = s.querySelector("#ta"), out = s.querySelector("#out");
+  s.querySelector("#read").addEventListener("click", () => {
+    const {rows, chain} = parseExport(ta.value);
+    const f1 = s.querySelector('#foot1'); if (f1) f1.style.display = 'none';
+    if (!rows.length){ out.innerHTML = `<div class="readout"><span class="bad">Nothing readable in there.</span>
+      Paste the whole export, including the header row.</div>`; return; }
+    const {mm, yr} = guessMonth(rows);
+    const t = totals(rows, S.rules);
+    const existing = S.months.find(x => x.key === `${yr}-${mm}`);
+    out.innerHTML = `<div class="readout">
+      <div class="row"><span>Rows read</span><span>${rows.length}</span></div>
+      <div class="row"><span>Month</span><span>${MONTHS[+mm-1]} ${String(yr).slice(2)}</span></div>
+      <div class="row"><span>Running balance</span><span>${chain
+        ? (chain.breaks === 0
+            ? `<span class="ok">checks out across ${chain.checked}</span>`
+            : `<span class="bad">${chain.breaks} break${chain.breaks>1?"s":""}</span>`)
+        : "no balance column"}</span></div>
+      <div class="row"><span>Income</span><span>${money(t.income)}</span></div>
+      <div class="row"><span>Counted toward tithe</span><span>${money(t.base)}</span></div>
+      <div class="row"><span>Tithes owed</span><span><b>${money(t.owed)}</b></span></div>
+      ${existing ? `<div class="row"><span class="bad">${MONTHS[+mm-1]} already exists</span><span>saving replaces it</span></div>` : ""}
+    </div>
+    <div class="pfoot">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="save">${existing ? "Replace" : "Save"} ${MONTHS[+mm-1]} ${String(yr).slice(2)}</button>
+    </div>`;
+    out.querySelector("#save").addEventListener("click", async () => {
+      const key = `${yr}-${mm}`;
+      const label = `${MONTHS[+mm-1]} ${String(yr).slice(2)}`;
+      const btn = out.querySelector("#save");
+      btn.disabled = true; btn.textContent = "Saving\u2026";
+      try {
+        await api("/months/" + key, {method:"PUT", body:{label, rows}});
+        await loadAll();
+      } catch(ex){
+        btn.disabled = false; btn.textContent = "Try again";
+        alert(ex.message); return;
+      }
+      S.cur = key; S.all = false; s.remove(); render();
+    });
+  });
+  ta.focus();
+});
+
+$("#btnRules").addEventListener("click", () => {
+  const s = panel("Rules", Object.keys(RULE_META).map(k => `
+    <div class="rule">
+      <h3>${RULE_META[k].name}</h3>
+      <p>${RULE_META[k].why}</p>
+      <div class="keys" data-list="${k}">
+        ${(S.rules[k]||[]).map(v => `<span class="key">${esc(v)}<button data-del="${esc(v)}" data-k="${k}" aria-label="Remove ${esc(v)}">&times;</button></span>`).join("")}
+        <button class="addkey" data-add="${k}">+ add</button>
+      </div>
+    </div>`).join("") + `
+    <p class="note">A row matches when its description <b>contains</b> one of these, ignoring case.
+    Checks, deposits and Apple Cash are handled in the code and need no keywords.
+    Changing a rule here re-figures every month at once, including the ones already saved.</p>`);
+
+  s.querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", async () => {
+    const k = b.dataset.add;
+    const v = prompt(`New ${RULE_META[k].name.toLowerCase()} keyword.\nLowercase, and part of the description is enough.`);
+    if (!v || !v.trim()) return;
+    await saveRules({...S.rules, [k]:[...(S.rules[k]||[]), v.trim().toLowerCase()]});
+    s.remove();
+  }));
+  s.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
+    const k = b.dataset.k, v = b.dataset.del;
+    await saveRules({...S.rules, [k]:(S.rules[k]||[]).filter(x => x !== v)});
+    s.remove();
+  }));
+});
+
+async function saveRules(next){
+  const before = S.rules;
+  S.rules = next; render();
+  try { await api("/config/rules", {method:"PUT", body:{rules:next}}); }
+  catch(e){
+    S.rules = before; render();
+    if (e.message !== "Locked") alert("That rule didn't save. " + e.message);
+  }
+}
+
+$("#btnPw").addEventListener("click", () => passwordPanel());
+
+$("#btnLock").addEventListener("click", () => {
+  setToken(""); S.locked = true; S.months = []; render();
+});
+
+boot();
+</script>
+</body>
+</html>
