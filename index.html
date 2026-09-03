@@ -286,16 +286,9 @@ textarea:focus{outline:none; border-color:var(--accent)}
 
 /* ============ defaults: the rules, ported from the Apps Script ============ */
 const DEFAULT_RULES = {
-  subs:  ["google workspace","claude","anthropic","railway","companycam","expo.dev"],
-  vendor:["stine","elliott electric","notoco","basic supply","comeaux bowers wague",
-          "amazon mktpl","lowe's","home depot","o'reilly","hyphen solutions","bridge storage",
-          "openai","supabase","amazon.com","vidrines","thibodeaux electric","mailgun",
-          "building code inspect","govolution","lcg development","tesla supercharger","google *play"],
-  ew:    ["direct checks unlimited","ally payment","alliant cu","citi card online payment",
-          "lci premium trust","lowes payment","chase credit","ipfs"],
-  half:  ["at&t payment","la farm bureau insurance"],
-  review:["ring.com","ring solo","cox","starlink","moses tv","city of opelousas","paystar",
-          "meshy","apple.com/bill","guitarcenter","doug young nursery","target.com"]
+  // The real keyword lists live on the server and arrive after you unlock.
+  // Nothing about what you buy or who you buy it from ships in this file.
+  subs:[], vendor:[], ew:[], half:[], review:[]
 };
 const RULE_META = {
   subs:  {name:"Recurring subscriptions", why:"Deducted in full. Matches only rows typed Recurring Card Purchase."},
