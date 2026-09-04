@@ -183,6 +183,10 @@ tr.look td{background:var(--look-soft)}
 .inc{border-color:var(--accent-line); color:var(--accent)}
 .inc:hover{background:var(--accent-soft); border-color:var(--accent)}
 .inc.on{background:var(--accent); border-color:var(--accent); color:#fff}
+tr.grp td{background:var(--sunk); border-top:1px solid var(--line)}
+tr.grp td:first-child{letter-spacing:.02em}
+tr.acct{cursor:pointer}
+tr.acct:hover td{background:var(--sunk)}
 .empty{padding:44px 20px; text-align:center; color:var(--ink-3); font-size:14px}
 mark{background:var(--accent-soft); color:inherit; border-radius:3px; padding:0 2px}
 
@@ -279,6 +283,7 @@ textarea:focus{outline:none; border-color:var(--accent)}
     <div class="brand">
       <h1>Tithe <em>Ledger</em></h1>
       <div class="acts">
+        <button class="btn" id="btnBooks">Books</button>
         <button class="btn" id="btnLock">Lock</button>
         <button class="btn" id="btnPw">Password</button>
         <button class="btn" id="btnRules">Rules</button>
@@ -431,7 +436,9 @@ function parseExport(text){
     else if (kind === "ACH_DEBIT" || kind === "ACH_CREDIT" || kind === "MISC_DEBIT"){
       type = kind === "ACH_CREDIT" ? "Deposit" : "Electronic Withdrawal";
       desc = null;
-      if (U.includes("PAYPAL")) desc = U.includes("EBAY") ? "PayPal / eBay" : "PayPal \u2013 Transfer";
+      if (U.includes("PAYPAL"))
+        desc = U.includes("EBAY") ? "PayPal / eBay"
+             : kind === "ACH_CREDIT" ? "PayPal \u2013 Transfer" : "PayPal \u2013 Purchase";
       else for (const [k,v] of ACH) if (U.includes(k)){ desc = v; break; }
       if (!desc) desc = tidy(raw.replace(/ORIG CO NAME:/i,"").replace(/ORIG ID:.*/i,""));
     } else {
@@ -470,7 +477,7 @@ function guessMonth(rows){
 /* ============ state ============ */
 const API = "https://api.jobhubgo.com/api/tithes";
 const money = n => (n < 0 ? "-" : "") + "$" + Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2});
-const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, q:"", filter:"all", all:false,
+const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, view:"ledger", q:"", filter:"all", all:false,
            locked:true, ready:false, offline:false};
 const $ = s => document.querySelector(s);
 
@@ -504,9 +511,10 @@ async function api(path, opts = {}){
 }
 
 async function loadAll(){
-  const [m, r] = await Promise.all([api("/months"), api("/config/rules")]);
+  const [m, r, c] = await Promise.all([api("/months"), api("/config/rules"), api("/config/categories")]);
   S.months = (m.months || []).map(x => ({id:x.key, key:x.key, label:x.label, rows:x.rows || []}));
   if (r && r.rules) S.rules = {...DEFAULT_RULES, ...r.rules};
+  S.cats = (c && c.categories) || {};
   if (!S.cur || !S.months.some(x => x.id === S.cur)) S.cur = S.months[0]?.id || null;
 }
 
@@ -663,6 +671,7 @@ function render(){
     main.innerHTML = '<div class="offline">No months yet. Choose <b>Paste a month</b> and drop in a Chase export.</div>';
     return;
   }
+  if (S.view === "books") return renderBooks(m);
   const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label}))) : m.rows;
   const t = totals(S.all ? rows : m.rows, S.rules);
 
@@ -791,7 +800,10 @@ async function setFlag(monthId, i, flag, value){
   if (!m) return;
   const before = m.rows;
   const next = value === undefined ? (m.rows[i][flag] ? 0 : 1) : value;
-  const rows = m.rows.map((r,k) => k === i ? {...r, [flag]: next, ...(next ? {[flag === "x" ? "i" : "x"]: 0} : {})} : r);
+  // Leaving out and counting by hand are opposites, so setting one clears the
+  // other. A category code is a separate question and clears nothing.
+  const pair = flag === "x" ? "i" : flag === "i" ? "x" : null;
+  const rows = m.rows.map((r,k) => k === i ? {...r, [flag]: next, ...(pair && next ? {[pair]: 0} : {})} : r);
   m.rows = rows;
   render();
   try { await api("/months/" + monthId, {method:"PUT", body:{label:m.label, rows}}); }
@@ -882,6 +894,204 @@ function includePanel(monthId, i, row){
     await saveRules({...S.rules, [list]: [...(S.rules[list] || []), kw]});
     s.remove();
   });
+}
+
+
+/* ============ books: the same rows, coded the way a bookkeeper would ============ */
+
+const GROUP_ORDER = ["Income","Job costs","Operating","Taxes","Debt","Owner & personal","Needs a decision"];
+
+/**
+ * Which account a row belongs to. A hand-set code on the row wins; after that
+ * it is the first category whose keywords appear in the description. A cheque
+ * never names its payee on a bank statement, so cheques land in their own
+ * bucket to be coded by hand rather than guessed at.
+ */
+function codeRow(row, cats){
+  if (row.g && (cats[row.g] || row.g === "_check" || row.g === "_none")) return row.g;
+  const d = (row.c || "").toLowerCase(), amt = Number(row.a) || 0;
+  for (const id of Object.keys(cats)){
+    const c = cats[id];
+    if (!(c.keys || []).some(k => k && d.includes(k))) continue;
+    // An income account only ever takes money in. Without this a domestic
+    // incoming wire FEE books as income because it says "incoming wire".
+    if (c.group === "Income" && amt < 0) continue;
+    return id;
+  }
+  if (row.t === "Check Paid") return "_check";
+  if (row.t === "Deposit" || row.t === "Refund") return "_income";
+  return "_none";
+}
+
+function catLabel(id){
+  if (id === "_check")  return {group:"Needs a decision", label:"Cheques — payee is not on the statement"};
+  if (id === "_none")   return {group:"Needs a decision", label:"Not coded yet"};
+  if (id === "_income") return {group:"Income", label:"Money in, uncategorised"};
+  return S.cats[id] || {group:"Needs a decision", label:id};
+}
+
+function booksTotals(rows){
+  const by = {};
+  for (const r of rows){
+    const id = codeRow(r, S.cats);
+    (by[id] = by[id] || {n:0, sum:0, rows:[]});
+    by[id].n++; by[id].sum += Number(r.a) || 0; by[id].rows.push(r);
+  }
+  return by;
+}
+
+function renderBooks(m){
+  const main = $("#main");
+  const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label, _id:x.id})))
+                     : m.rows.map((r,i) => ({...r, _id:m.id, _i:i}));
+  const by = booksTotals(rows);
+  const out = Object.values(by).reduce((n,v) => n + (v.sum < 0 ? v.sum : 0), 0);
+  const inc = Object.values(by).reduce((n,v) => n + (v.sum > 0 ? v.sum : 0), 0);
+
+  const groups = {};
+  for (const [id, v] of Object.entries(by)){
+    const meta = catLabel(id);
+    (groups[meta.group] = groups[meta.group] || []).push({id, ...v, label: meta.label});
+  }
+  const order = [...GROUP_ORDER.filter(g => groups[g]), ...Object.keys(groups).filter(g => !GROUP_ORDER.includes(g))];
+
+  const needs = (by._check?.n || 0) + (by._none?.n || 0);
+  const needsSum = (by._check?.sum || 0) + (by._none?.sum || 0);
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed">
+        <div class="k">Money in${S.all ? " · all months" : ""}</div>
+        <div class="v num">${money(inc)}</div>
+        <div class="sub">${money(out)} out &middot; ${money(inc + out)} net</div>
+      </div>
+      <div class="cell"><div class="k">Rows</div><div class="v num">${rows.length}</div></div>
+      <div class="cell"><div class="k">Accounts used</div><div class="v num">${Object.keys(by).length}</div></div>
+      <div class="cell"><div class="k">Still to code</div>
+        <div class="v num" style="color:${needs ? "var(--park)" : "var(--accent)"}">${needs}</div>
+        <div class="sub">${money(needsSum)}</div></div>
+    </section>
+
+    <div class="bar">
+      <span class="count" style="margin:0">A bookkeeper's view of the same rows. Coding here does not change the tithe.</span>
+      <button class="chip" id="allMonthsB" aria-pressed="${S.all}">All months</button>
+      <button class="chip" id="csv">Copy for a spreadsheet</button>
+    </div>
+
+    <div class="scroll"><table>
+      <thead><tr><th>Account</th><th class="r-amt">Amount</th><th class="r-amt">Rows</th><th class="r-amt">Share of spend</th></tr></thead>
+      <tbody>
+        ${order.map(g => {
+          const items = groups[g].sort((a,b) => a.sum - b.sum);
+          const gsum = items.reduce((n,i) => n + i.sum, 0);
+          return `<tr class="grp"><td><b>${esc(g)}</b></td><td class="r-amt num"><b>${money(gsum)}</b></td>
+                  <td class="r-amt num">${items.reduce((n,i)=>n+i.n,0)}</td><td></td></tr>` +
+            items.map(i => `<tr class="acct" data-cat="${esc(i.id)}">
+              <td style="padding-left:26px">${esc(i.label)}${i.id === "_check" || i.id === "_none"
+                  ? ' <span class="tag off">code these</span>' : ""}</td>
+              <td class="r-amt num ${i.sum < 0 ? "neg" : "pos"}">${money(i.sum)}</td>
+              <td class="r-amt num">${i.n}</td>
+              <td class="r-amt num" style="color:var(--ink-3)">${
+                i.sum < 0 && out ? (i.sum / out * 100).toFixed(1) + "%" : "—"}</td>
+            </tr>`).join("");
+        }).join("")}
+      </tbody>
+    </table></div>
+    <div id="drill"></div>`;
+
+  $("#allMonthsB").addEventListener("click", () => { S.all = !S.all; render(); });
+  $("#csv").addEventListener("click", () => copyBooks(by, order, groups));
+  main.querySelectorAll(".acct").forEach(tr =>
+    tr.addEventListener("click", () => drillInto(tr.dataset.cat, by[tr.dataset.cat])));
+}
+
+/** The rows behind one account, each with a way to re-code it. */
+function drillInto(id, bucket){
+  if (!bucket) return;
+  const meta = catLabel(id);
+  const el = $("#drill");
+  el.innerHTML = `
+    <h3 style="font-family:Newsreader,Georgia,serif;font-weight:500;font-size:19px;margin:26px 0 10px">
+      ${esc(meta.label)} <span style="color:var(--ink-3);font-size:14px">&middot; ${bucket.n} rows</span></h3>
+    <div class="scroll"><table><tbody>
+      ${bucket.rows.slice(0, 200).map(r => `<tr>
+        <td class="r-date num">${esc(r.d)}${r._m ? `<br><small style="color:var(--ink-3)">${esc(r._m)}</small>` : ""}</td>
+        <td class="r-desc">${esc(r.c)}</td>
+        <td class="r-amt num ${r.a < 0 ? "neg" : "pos"}">${money(r.a)}</td>
+        <td class="r-amt"><button class="btn" style="padding:3px 10px;font-size:12px"
+             data-code="${esc(r._id)}" data-i="${r._i}">Code it</button></td>
+      </tr>`).join("")}
+    </tbody></table></div>
+    ${bucket.rows.length > 200 ? `<p class="note">Showing the first 200 of ${bucket.rows.length}.</p>` : ""}`;
+  el.querySelectorAll("[data-code]").forEach(b => b.addEventListener("click", () => {
+    const m = S.months.find(x => x.id === b.dataset.code);
+    const row = m && m.rows[+b.dataset.i];
+    if (row) codePanel(b.dataset.code, +b.dataset.i, row);
+  }));
+  el.scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+/** Put one row in an account — just it, or everything like it. */
+function codePanel(monthId, i, row){
+  const ids = Object.keys(S.cats).sort((a,b) =>
+    (S.cats[a].group + S.cats[a].label).localeCompare(S.cats[b].group + S.cats[b].label));
+  const s = panel("Code this row", `
+    <p class="hint">${esc(row.c)}<br><span style="color:var(--ink-3)">${esc(row.t)} &middot; ${money(row.a)}</span></p>
+    <form id="cform">
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3);font-weight:600;margin:16px 0 6px">Account</label>
+      <select id="cat" style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit">
+        ${ids.length ? ids.map(id => `<option value="${esc(id)}">${esc(S.cats[id].group)} &rsaquo; ${esc(S.cats[id].label)}</option>`).join("")
+                     : '<option value="">No accounts set up yet</option>'}
+      </select>
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3);font-weight:600;margin:16px 0 6px">And everything containing (optional)</label>
+      <input id="ckw" type="text" value="${esc(row.t === "Check Paid" ? "" : suggestKeyword(row.c))}"
+             placeholder="leave empty to code only this row"
+             style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:13px">
+      ${row.t === "Check Paid" ? '<p class="fine">A cheque number is unique, so there is nothing useful to learn from it. This one gets coded on its own.</p>' : ""}
+      <p class="err" id="cerr" hidden></p>
+      <div class="pfoot">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit">Code it</button>
+      </div>
+    </form>`);
+  s.querySelector("#cform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const id = s.querySelector("#cat").value;
+    const kw = s.querySelector("#ckw").value.trim().toLowerCase();
+    const err = s.querySelector("#cerr");
+    if (!id){ err.hidden = false; err.textContent = "Set up an account first."; return; }
+    if (kw){
+      if (!row.c.toLowerCase().includes(kw)){
+        err.hidden = false; err.textContent = "That does not appear in this row, so it would not match it."; return;
+      }
+      await saveCats({...S.cats, [id]: {...S.cats[id], keys:[...(S.cats[id].keys || []), kw]}});
+    } else {
+      await setFlag(monthId, i, "g", id);
+    }
+    s.remove();
+  });
+}
+
+async function saveCats(next){
+  const before = S.cats;
+  S.cats = next; render();
+  try { await api("/config/categories", {method:"PUT", body:{categories:next}}); }
+  catch(e){
+    S.cats = before; render();
+    if (e.message !== "Locked") alert("That didn't save. " + e.message);
+  }
+}
+
+/** Straight to the clipboard, so it can go to a CPA in a spreadsheet. */
+function copyBooks(by, order, groups){
+  const lines = [["Group","Account","Amount","Rows"].join("\t")];
+  for (const g of order)
+    for (const i of groups[g].sort((a,b) => a.sum - b.sum))
+      lines.push([g, i.label, i.sum.toFixed(2), i.n].join("\t"));
+  navigator.clipboard.writeText(lines.join("\n")).then(
+    () => { const b = $("#csv"); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy for a spreadsheet", 1600); },
+    () => alert("Couldn't reach the clipboard.")
+  );
 }
 
 /* ============ panels ============ */
@@ -987,6 +1197,12 @@ async function saveRules(next){
     if (e.message !== "Locked") alert("That rule didn't save. " + e.message);
   }
 }
+
+$("#btnBooks").addEventListener("click", () => {
+  S.view = S.view === "books" ? "ledger" : "books";
+  $("#btnBooks").textContent = S.view === "books" ? "Ledger" : "Books";
+  render();
+});
 
 $("#btnPw").addEventListener("click", () => passwordPanel());
 
