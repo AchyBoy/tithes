@@ -139,6 +139,11 @@ h1 em{font-style:italic; color:var(--accent)}
   background:var(--surface); border:1px solid var(--line); border-radius:99px;
   padding:6px 12px; font-size:12.5px; font-weight:500; color:var(--ink-2);
 }
+.seg{display:inline-flex}
+.seg .btn{border-radius:0; margin-left:-1px}
+.seg .btn:first-child{border-radius:var(--r) 0 0 var(--r); margin-left:0}
+.seg .btn:last-child{border-radius:0 var(--r) var(--r) 0}
+.seg .btn[aria-pressed="true"]{background:var(--ink); border-color:var(--ink); color:var(--paper)}
 .chip[aria-pressed="true"]{background:var(--ink); border-color:var(--ink); color:var(--paper)}
 .count{font-size:12.5px; color:var(--ink-3); margin-left:auto}
 
@@ -185,8 +190,8 @@ tr.look td{background:var(--look-soft)}
 .inc.on{background:var(--accent); border-color:var(--accent); color:#fff}
 tr.grp td{background:var(--sunk); border-top:1px solid var(--line)}
 tr.grp td:first-child{letter-spacing:.02em}
-tr.acct{cursor:pointer}
-tr.acct:hover td{background:var(--sunk)}
+tr.acct,tr.rec{cursor:pointer}
+tr.acct:hover td,tr.rec:hover td{background:var(--sunk)}
 .empty{padding:44px 20px; text-align:center; color:var(--ink-3); font-size:14px}
 mark{background:var(--accent-soft); color:inherit; border-radius:3px; padding:0 2px}
 
@@ -283,7 +288,11 @@ textarea:focus{outline:none; border-color:var(--accent)}
     <div class="brand">
       <h1>Tithe <em>Ledger</em></h1>
       <div class="acts">
-        <button class="btn" id="btnBooks">Books</button>
+        <span class="seg">
+          <button class="btn" data-view="ledger">Ledger</button
+          ><button class="btn" data-view="books">Books</button
+          ><button class="btn" data-view="recurring">Recurring</button>
+        </span>
         <button class="btn" id="btnLock">Lock</button>
         <button class="btn" id="btnPw">Password</button>
         <button class="btn" id="btnRules">Rules</button>
@@ -477,7 +486,7 @@ function guessMonth(rows){
 /* ============ state ============ */
 const API = "https://api.jobhubgo.com/api/tithes";
 const money = n => (n < 0 ? "-" : "") + "$" + Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2});
-const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, view:"ledger", q:"", filter:"all", all:false,
+const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
            locked:true, ready:false, offline:false};
 const $ = s => document.querySelector(s);
 
@@ -511,10 +520,13 @@ async function api(path, opts = {}){
 }
 
 async function loadAll(){
-  const [m, r, c] = await Promise.all([api("/months"), api("/config/rules"), api("/config/categories")]);
+  const [m, r, c, x] = await Promise.all([api("/months"), api("/config/rules"),
+                                          api("/config/categories"), api("/config/recurring")]);
   S.months = (m.months || []).map(x => ({id:x.key, key:x.key, label:x.label, rows:x.rows || []}));
   if (r && r.rules) S.rules = {...DEFAULT_RULES, ...r.rules};
   S.cats = (c && c.categories) || {};
+  S.dismissed = ((x && x.recurring) || {}).dismissed || [];
+  S.added = ((x && x.recurring) || {}).added || [];
   if (!S.cur || !S.months.some(x => x.id === S.cur)) S.cur = S.months[0]?.id || null;
 }
 
@@ -660,6 +672,8 @@ function render(){
   if (!S.ready) return;
   if (S.locked){ renderGate(); return; }
   $(".acts").style.display = "";
+  document.querySelectorAll("[data-view]").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.view === S.view)));
   renderMonths();
   const main = $("#main");
   if (S.offline && !S.months.length){
@@ -672,6 +686,7 @@ function render(){
     return;
   }
   if (S.view === "books") return renderBooks(m);
+  if (S.view === "recurring") return renderRecurring();
   const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label}))) : m.rows;
   const t = totals(S.all ? rows : m.rows, S.rules);
 
@@ -1094,6 +1109,296 @@ function copyBooks(by, order, groups){
   );
 }
 
+
+/* ============ recurring: the bills that come back every month ============ */
+
+const TOWNS_R = ["lafayette","opelousas","broussard","maurice","rayne","carencro","scott","duson",
+ "crowley","new iberia","lake charles","jennings","covington","henderson","gonzales","denham spring",
+ "grand coteau","iowa","nacogdoches","palo alto","singapore","kinder","coral springs","baton rouge","columbia"];
+
+/** The payee, with everything that changes between months taken off. */
+function merchantKey(desc){
+  let d = String(desc || "").toLowerCase()
+    .replace(/\b\d{3}[- ]\d{3}[- ]?\d{4}\b/g, " ")
+    .replace(/\b[a-z]*\d[a-z0-9]{5,}\b/g, " ")
+    .replace(/\b\d{3,}\b/g, " ")
+    .replace(/^(py|sq|tst|par|dd|vsp|dri|ppl)\s*\*\s*/, "")     // PY *BRIDGE STORAGE is Bridge Storage
+    .replace(/[#*].*$/, " ")
+    .replace(/\b(la|tx|ca|ms|ar|mn|wa|or|ks|fl|ne|nv|hi|il|wi)\b\s*$/, " ")
+    .replace(/\s+/g, " ").trim();
+  // The spreadsheet months named these differently from the parser — "Alliant CU"
+  // against "Alliant CU – Dep-Pymt" — so a trailing descriptor comes off.
+  const dash = d.search(/\s[\u2013-]\s/);
+  if (dash >= 6) d = d.slice(0, dash).trim();
+  for (const t of TOWNS_R){
+    const at = d.lastIndexOf(t);
+    if (at > 3 && at + t.length >= d.length - 3){
+      const cut = d.slice(0, at).trim();
+      if (cut.length >= 6 && !/\b(of|the|at|in|for|and|to)$/.test(cut)) d = cut;
+      break;
+    }
+  }
+  return d.replace(/\b(us|inc|llc)\s*$/, "").replace(/[\s,.\-]+$/, "").trim();
+}
+
+const medOf = a => { const s = [...a].sort((x,y) => x-y); return s[Math.floor(s.length/2)]; };
+
+/**
+ * Everything that looks like it comes back every month.
+ *
+ * Two ways in. Either the same amount returns month after month, which is what a
+ * subscription looks like — or the payee returns about once a month and the
+ * amount only drifts, which is what a utility bill looks like. A cheque names no
+ * payee, a transfer is his own money moving, and lunch is never a subscription,
+ * so none of those are considered at all.
+ */
+function findRecurring(){
+  const keys = S.months.map(m => m.key).sort();
+  if (!keys.length) return {items:[], keys:[]};
+  const SKIP = new Set(["Check Paid","Online Transfer","ATM Withdrawal","Deposit","Refund"]);
+  const byKey = {};
+  for (const m of S.months) for (const r of m.rows){
+    if (r.a >= 0 || SKIP.has(r.t)) continue;
+    if (/apple cash/i.test(r.c)) continue;
+    const cid = codeRow(r, S.cats);
+    if (cid && S.cats[cid] && /meals/i.test(cid)) continue;
+    const k = merchantKey(r.c);
+    if (k.length < 4) continue;
+    (byKey[k] = byKey[k] || []).push({...r, month:m.key, label:m.label});
+  }
+
+  const last = keys[keys.length-1], prev = keys[keys.length-2];
+  const items = [];
+  for (const [k, hits] of Object.entries(byKey)){
+    if (S.dismissed.includes(k)) continue;
+    const months = new Set(hits.map(h => h.month));
+    const recent = months.has(last) || months.has(prev);
+    if (months.size < (recent ? 2 : 3)) continue;
+
+    const byAmt = {};
+    for (const h of hits){
+      const a = Math.abs(h.a).toFixed(2);
+      (byAmt[a] = byAmt[a] || new Set()).add(h.month);
+    }
+    const [amt, ms] = Object.entries(byAmt).sort((a,b) => b[1].size - a[1].size)[0];
+    const share = hits.filter(h => Math.abs(h.a).toFixed(2) === amt).length / hits.length;
+    // Two sightings is thin, so that amount has to be essentially all he pays
+    // this payee. Twice at $21.79 out of 29 Amazon orders is a coincidence.
+    const steady = ms.size >= 3 ? share >= 0.34 : (recent && ms.size >= 2 && share >= 0.6);
+
+    const all = hits.map(h => Math.abs(h.a));
+    const band = Math.max(...all) / Math.max(0.01, Math.min(...all));
+    const variable = months.size >= (recent ? 2 : 4) && hits.length / months.size <= 1.6 && band <= 2.5;
+    if (!steady && !variable) continue;
+
+    const use = steady ? hits.filter(h => Math.abs(h.a).toFixed(2) === amt) : hits;
+    items.push({
+      key: k,
+      name: hits[hits.length-1].c,
+      amount: steady ? Number(amt) : medOf(all),
+      day: medOf(use.map(h => Number(h.d.slice(3)))),
+      months: [...(steady ? ms : months)].sort(),
+      seen: months.size,
+      live: months.has(last),
+      lastMonth: (S.months.find(m => m.key === [...months].sort().pop()) || {}).label,
+      range: steady ? null : [Math.min(...all), Math.max(...all)],
+      hits
+    });
+  }
+  items.sort((a,b) => b.amount - a.amount);
+  // Anything he has said is recurring comes in whether or not the tests agree.
+  // The tests are a guess about his money; he is not guessing.
+  for (const k of S.added){
+    if (items.some(i => i.key === k)) continue;
+    const hits = byKey[k];
+    if (!hits || !hits.length) continue;
+    const months = new Set(hits.map(h => h.month));
+    const all = hits.map(h => Math.abs(h.a));
+    const byAmt = {};
+    for (const h of hits){
+      const a = Math.abs(h.a).toFixed(2);
+      (byAmt[a] = byAmt[a] || new Set()).add(h.month);
+    }
+    const [amt, ms] = Object.entries(byAmt).sort((a,b) => b[1].size - a[1].size)[0];
+    const steady = ms.size > 1;
+    items.push({
+      key: k, name: hits[hits.length-1].c, byHand: true,
+      amount: steady ? Number(amt) : medOf(all),
+      day: medOf(hits.map(h => Number(h.d.slice(3)))),
+      months: [...months].sort(), seen: months.size,
+      live: months.has(last),
+      lastMonth: (S.months.find(m => m.key === [...months].sort().pop()) || {}).label,
+      range: steady ? null : [Math.min(...all), Math.max(...all)],
+      hits
+    });
+  }
+  items.sort((a,b) => b.amount - a.amount);
+  return {items, keys, byKey};
+}
+
+function renderRecurring(){
+  const main = $("#main");
+  const {items, keys} = findRecurring();
+  const live = items.filter(i => i.live), gone = items.filter(i => !i.live);
+  const perMonth = live.reduce((n,i) => n + i.amount, 0);
+  const goneMonth = gone.reduce((n,i) => n + i.amount, 0);
+  const q = S.q.trim().toLowerCase();
+
+  const row = i => `<tr class="rec" data-key="${esc(i.key)}">
+      <td class="r-date num" style="text-align:center">${String(i.day).padStart(2,"0")}</td>
+      <td class="r-desc">${hl(i.name, q)}${i.range
+          ? `<br><small style="color:var(--ink-3)">between ${money(i.range[0])} and ${money(i.range[1])}</small>` : ""}
+        ${!i.live ? `<br><small style="color:var(--park)">nothing since ${esc(i.lastMonth || "")}</small>` : ""}
+        ${i.byHand ? '<br><small style="color:var(--accent)">you added this</small>' : ""}</td>
+      <td class="r-amt num neg">${money(-i.amount)}</td>
+      <td class="r-amt num" style="color:var(--ink-3)">${money(-i.amount * 12)}</td>
+      <td class="r-amt num" style="color:var(--ink-3)">${i.seen}/${keys.length}</td>
+      <td class="r-amt"><button class="btn" style="padding:3px 9px;font-size:12px"
+           data-drop="${esc(i.key)}" title="${i.byHand ? "Take it back off the list" : "Not a subscription"}"
+           >${i.byHand ? "Remove" : "Not this"}</button></td>
+    </tr>`;
+
+  const show = list => list.filter(i => !q || (i.name + " " + i.key).toLowerCase().includes(q));
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed">
+        <div class="k">Coming out every month</div>
+        <div class="v num">${money(perMonth)}</div>
+        <div class="sub">${money(perMonth * 12)} a year &middot; ${live.length} of them</div>
+      </div>
+      <div class="cell"><div class="k">Biggest</div>
+        <div class="v num">${live.length ? money(live[0].amount) : "—"}</div>
+        <div class="sub">${live.length ? esc(live[0].name.slice(0,26)) : ""}</div></div>
+      <div class="cell"><div class="k">Busiest day</div>
+        <div class="v num">${live.length ? busiestDay(live) : "—"}</div>
+        <div class="sub">of the month</div></div>
+      <div class="cell"><div class="k">Stopped</div>
+        <div class="v num" style="color:${gone.length ? "var(--park)" : "var(--ink-3)"}">${gone.length}</div>
+        <div class="sub">${gone.length ? money(goneMonth) + " a month" : "none"}</div></div>
+    </section>
+
+    <div class="bar">
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="q" type="search" placeholder="Search what comes out&hellip;" value="${esc(S.q)}">
+      </label>
+      <button class="chip" id="addRec">Add one it missed</button>
+      <span class="count">Worked out from ${keys.length} months. Click one to see every charge.</span>
+    </div>
+
+    <div class="scroll"><table>
+      <thead><tr><th style="text-align:center">Day</th><th>What</th>
+        <th class="r-amt">Each time</th><th class="r-amt">A year</th>
+        <th class="r-amt">Months</th><th></th></tr></thead>
+      <tbody>
+        ${show(live).map(row).join("")}
+        ${gone.length ? `<tr class="grp"><td colspan="6"><b>Not billing any more</b>
+          &mdash; worth checking these were meant to stop</td></tr>` + show(gone).map(row).join("") : ""}
+      </tbody>
+    </table></div>
+    <div id="drill"></div>`;
+
+  $("#q").addEventListener("input", e => { S.q = e.target.value; renderRecurring(); });
+  $("#addRec").addEventListener("click", () => addRecurringPanel(findRecurring()));
+  main.querySelectorAll("[data-drop]").forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    dropRecurring(b.dataset.drop);
+  }));
+  main.querySelectorAll("tr.rec").forEach(tr => tr.addEventListener("click", () => {
+    const it = items.find(i => i.key === tr.dataset.key);
+    if (it) showCharges(it);
+  }));
+}
+
+function busiestDay(list){
+  const t = {};
+  for (const i of list) t[i.day] = (t[i.day] || 0) + 1;
+  const best = Object.entries(t).sort((a,b) => b[1] - a[1])[0];
+  return best ? String(best[0]).padStart(2,"0") : "—";
+}
+
+function showCharges(item){
+  const el = $("#drill");
+  el.innerHTML = `
+    <h3 style="font-family:Newsreader,Georgia,serif;font-weight:500;font-size:19px;margin:26px 0 10px">
+      ${esc(item.name)} <span style="color:var(--ink-3);font-size:14px">&middot; every charge on record</span></h3>
+    <div class="scroll"><table><tbody>
+      ${item.hits.slice().reverse().map(h => `<tr>
+        <td class="r-date num">${esc(h.label)}</td>
+        <td class="r-date num">${esc(h.d)}</td>
+        <td class="r-desc">${esc(h.c)}</td>
+        <td class="r-amt num neg">${money(h.a)}</td>
+      </tr>`).join("")}
+    </tbody></table></div>`;
+  el.scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+async function saveRecurring(dismissed, added){
+  const was = [S.dismissed, S.added];
+  S.dismissed = dismissed; S.added = added; render();
+  try { await api("/config/recurring", {method:"PUT", body:{recurring:{dismissed, added}}}); }
+  catch(e){
+    [S.dismissed, S.added] = was; render();
+    if (e.message !== "Locked") alert("That didn't save. " + e.message);
+  }
+}
+
+/** Taking one off: undo his own addition, or overrule the guess. */
+function dropRecurring(key){
+  if (S.added.includes(key)) return saveRecurring(S.dismissed, S.added.filter(k => k !== key));
+  return saveRecurring([...S.dismissed, key], S.added);
+}
+
+/** Anything he pays that the tests did not call recurring. */
+function addRecurringPanel(found){
+  const shown = new Set(found.items.map(i => i.key));
+  const options = Object.entries(found.byKey)
+    .filter(([k]) => !shown.has(k))
+    .map(([k, hits]) => ({
+      k, n: hits.length,
+      months: new Set(hits.map(h => h.month)).size,
+      amount: medOf(hits.map(h => Math.abs(h.a))),
+      name: hits[hits.length-1].c
+    }))
+    .sort((a,b) => b.amount * b.n - a.amount * a.n);
+
+  const s = panel("Add a recurring charge", `
+    <p class="hint">Everything else you pay, biggest first. Pick anything that comes back
+      every month &mdash; it will be counted in the total from now on, whatever the guess said.</p>
+    <label class="search" style="margin-bottom:12px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="findRec" type="search" placeholder="Search&hellip;">
+    </label>
+    <div class="scroll" style="max-height:46vh"><table><tbody id="recOpts">
+      ${options.slice(0, 60).map(o => `<tr data-add="${esc(o.k)}" class="rec">
+        <td class="r-desc">${esc(o.name.slice(0, 46))}</td>
+        <td class="r-amt num neg">${money(-o.amount)}</td>
+        <td class="r-amt num" style="color:var(--ink-3)">${o.months} month${o.months === 1 ? "" : "s"}</td>
+      </tr>`).join("")}
+    </tbody></table></div>
+    ${options.length > 60 ? `<p class="note">Showing the 60 you spend most on. Search for anything else.</p>` : ""}`);
+
+  const wire = () => s.querySelectorAll("[data-add]").forEach(tr =>
+    tr.addEventListener("click", () => {
+      saveRecurring(S.dismissed.filter(k => k !== tr.dataset.add), [...S.added, tr.dataset.add]);
+      s.remove();
+    }));
+  wire();
+  s.querySelector("#findRec").addEventListener("input", e => {
+    const q = e.target.value.trim().toLowerCase();
+    const list = options.filter(o => !q || (o.name + " " + o.k).toLowerCase().includes(q)).slice(0, 60);
+    s.querySelector("#recOpts").innerHTML = list.map(o => `<tr data-add="${esc(o.k)}" class="rec">
+        <td class="r-desc">${esc(o.name.slice(0, 46))}</td>
+        <td class="r-amt num neg">${money(-o.amount)}</td>
+        <td class="r-amt num" style="color:var(--ink-3)">${o.months} month${o.months === 1 ? "" : "s"}</td>
+      </tr>`).join("") || '<tr><td class="empty">Nothing matches that.</td></tr>';
+    wire();
+  });
+}
+
 /* ============ panels ============ */
 function panel(title, inner){
   const s = document.createElement("div");
@@ -1198,11 +1503,8 @@ async function saveRules(next){
   }
 }
 
-$("#btnBooks").addEventListener("click", () => {
-  S.view = S.view === "books" ? "ledger" : "books";
-  $("#btnBooks").textContent = S.view === "books" ? "Ledger" : "Books";
-  render();
-});
+document.querySelectorAll("[data-view]").forEach(b =>
+  b.addEventListener("click", () => { S.view = b.dataset.view; render(); }));
 
 $("#btnPw").addEventListener("click", () => passwordPanel());
 
