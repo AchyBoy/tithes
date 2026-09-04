@@ -22,6 +22,7 @@
   --credit:#2E6E5B; --debit:#8C4A3A;
   --park:#C0762A; --park-soft:#F7E7D2;
   --look:#6B5A93; --look-soft:#E8E3F2;
+  --park-line:#E3B98A; --accent-line:#9CC4B4;
   --warn:#A33A2E;
   --shadow:0 1px 2px rgba(27,33,31,.05), 0 8px 24px -12px rgba(27,33,31,.14);
   --r:10px;
@@ -35,6 +36,7 @@
     --credit:#63AC92; --debit:#D08A75;
     --park:#D9944A; --park-soft:#3A2A17;
     --look:#A492D0; --look-soft:#282243;
+    --park-line:#6B4A24; --accent-line:#37604F;
     --warn:#E0705E;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
   }
@@ -47,6 +49,7 @@
   --credit:#63AC92; --debit:#D08A75;
   --park:#D9944A; --park-soft:#3A2A17;
   --look:#A492D0; --look-soft:#282243;
+  --park-line:#6B4A24; --accent-line:#37604F;
   --warn:#E0705E;
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
 }
@@ -168,18 +171,17 @@ tr.look td{background:var(--look-soft)}
 .tag.on{background:var(--accent-soft); color:var(--accent)}
 .tag.off{background:var(--park-soft); color:var(--park)}
 .tag.look{background:var(--look-soft); color:var(--look)}
-.tog{
-  width:19px; height:19px; border-radius:5px; border:1.5px solid var(--line);
-  background:var(--surface); display:grid; place-items:center; padding:0; color:var(--park);
-}
-.tog:hover{border-color:var(--park)}
-.tog[aria-pressed="true"]{background:var(--park); border-color:var(--park); color:#fff}
-.inc{
-  width:19px; height:19px; border-radius:5px; border:1.5px solid var(--line);
+.tog,.inc{
+  width:27px; height:27px; border-radius:7px; border:1.5px solid;
   background:var(--surface); display:grid; place-items:center; padding:0;
-  color:var(--ink-3); font-size:13px; line-height:1; font-weight:600;
+  font-size:15px; line-height:1; font-weight:600;
+  transition:background .12s, border-color .12s, color .12s;
 }
-.inc:hover{border-color:var(--accent); color:var(--accent)}
+.tog{border-color:var(--park-line); color:var(--park)}
+.tog:hover{background:var(--park-soft); border-color:var(--park)}
+.tog[aria-pressed="true"]{background:var(--park); border-color:var(--park); color:#fff}
+.inc{border-color:var(--accent-line); color:var(--accent)}
+.inc:hover{background:var(--accent-soft); border-color:var(--accent)}
 .inc.on{background:var(--accent); border-color:var(--accent); color:#fff}
 .empty{padding:44px 20px; text-align:center; color:var(--ink-3); font-size:14px}
 mark{background:var(--accent-soft); color:inherit; border-radius:3px; padding:0 2px}
@@ -301,7 +303,7 @@ const RULE_META = {
   subs:  {name:"Recurring subscriptions", why:"Deducted in full. Matches only rows typed Recurring Card Purchase."},
   vendor:{name:"Vendor purchases",        why:"Deducted in full. Matches Card Purchase and Card Purchase With Pin."},
   ew:    {name:"Electronic withdrawals",  why:"Deducted in full. Matches only rows typed Electronic Withdrawal."},
-  half:  {name:"Half rule",               why:"Half the amount is deducted. Part business, part personal."},
+  half:  {name:"Half rule",               why:"Half the amount is deducted, whatever kind of row it is. Part business, part personal."},
   always:{name:"Always counted", why:"Deducted in full whatever kind of row it is. A row you counted by hand ends up here."},
   review:{name:"Flag for a look",         why:"Never deducted. Highlighted so you can decide each month."}
 };
@@ -321,7 +323,7 @@ function classify(row, R){
   if (t === "Electronic Withdrawal" && d.includes("paypal / ebay") && Math.abs(a) > 45)
                                                         return {f:-Math.abs(a), rule:"PayPal/eBay", kind:"on"};
   if (d.includes("apple cash"))                         return {f:-Math.abs(a), rule:"Apple Cash", kind:"on"};
-  if (t === "Electronic Withdrawal" && hit("half"))     return {f:-Math.abs(a)/2, rule:"Half rule", kind:"on"};
+  if (hit("half"))                                      return {f:-Math.abs(a)/2, rule:"Half rule", kind:"on"};
   if (t === "Fee" && d.includes("monthly service fee")) return {f:-Math.abs(a), rule:"Monthly fee", kind:"on"};
   if (hit("always"))                                    return {f:a, rule:"Counted", kind:"on"};
   if (hit("review"))                                    return {f:0, rule:"Take a look", kind:"look"};
