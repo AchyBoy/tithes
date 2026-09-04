@@ -332,7 +332,11 @@ function totals(rows, R){
 }
 
 /* ============ read a Chase export ============ */
-function splitCSV(line){
+function splitRow(line){
+  // Chase hands out both shapes: comma-separated with quoted fields, and
+  // tab-separated with none. A tab is never a value here, so its presence
+  // settles which one this is.
+  if (line.includes("\t")) return line.split("\t").map(s => s.trim());
   const out = []; let cur = "", q = false;
   for (let i = 0; i < line.length; i++){
     const ch = line[i];
@@ -383,7 +387,7 @@ function parseExport(text){
   const prev = [];
 
   for (const line of lines){
-    const f = splitCSV(line);
+    const f = splitRow(line);
     if (f.length < 5) continue;
     if (/^details$/i.test(f[0]) || /posting date/i.test(f[1] || "")) continue;
     const m = (f[1] || "").match(/^(\d{2})\/(\d{2})/);
@@ -396,12 +400,23 @@ function parseExport(text){
     const U    = raw.toUpperCase();
     let type = "Card Purchase", desc = tidy(raw);
 
-    if (kind === "FEE_TRANSACTION")      { type = "Fee"; desc = "Monthly Service Fee"; }
+    // Only the monthly one gets the tidy name — an incoming wire fee is also a
+    // FEE_TRANSACTION, and renaming it would have deducted it as the monthly fee.
+    if (kind === "FEE_TRANSACTION") {
+      type = "Fee";
+      desc = U.includes("MONTHLY SERVICE FEE") ? "Monthly Service Fee" : tidy(raw);
+    }
     else if (kind === "ACCT_XFER")       { type = "Online Transfer"; desc = tidy(raw.replace(/\s*transaction#.*/i,"")); }
     else if (kind === "CHECK_PAID")      { type = "Check Paid"; }
     else if (kind === "ATM")             { type = "ATM Withdrawal"; desc = "ATM Withdrawal"; }
+    else if (kind === "WIRE_INCOMING")   { const who = /B\/O:\s*([A-Z0-9'\-. ]+?)(?:\s+NOTPROVIDED|\s+REF:|\s+IMAD:|$)/.exec(U);
+                                           type = "Deposit"; desc = "Incoming Wire" + (who ? " \u2013 " + who[1].trim() : ""); }
+    else if (kind === "CHECK_DEPOSIT")   { type = "Deposit"; desc = "Remote Online Deposit"; }
+    else if (kind === "CHASE_TO_PARTNERFI") { type = "Zelle Payment"; desc = tidy(raw); }
     else if (kind === "ATM_DEPOSIT")     { type = "Deposit"; desc = "ATM Check Deposit \u2013 " + tidy(raw.replace(/^ATM CHECK DEPOSIT\s*\d{2}\/\d{2}\s*/i,"")); }
-    else if (kind === "ACH_DEBIT" || kind === "ACH_CREDIT"){
+    // Venmo and friends arrive as MISC_DEBIT but read like an ACH line, so they
+    // take the same naming pass.
+    else if (kind === "ACH_DEBIT" || kind === "ACH_CREDIT" || kind === "MISC_DEBIT"){
       type = kind === "ACH_CREDIT" ? "Deposit" : "Electronic Withdrawal";
       desc = null;
       if (U.includes("PAYPAL")) desc = U.includes("EBAY") ? "PayPal / eBay" : "PayPal \u2013 Transfer";
