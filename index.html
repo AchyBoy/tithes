@@ -174,6 +174,13 @@ tr.look td{background:var(--look-soft)}
 }
 .tog:hover{border-color:var(--park)}
 .tog[aria-pressed="true"]{background:var(--park); border-color:var(--park); color:#fff}
+.inc{
+  width:19px; height:19px; border-radius:5px; border:1.5px solid var(--line);
+  background:var(--surface); display:grid; place-items:center; padding:0;
+  color:var(--ink-3); font-size:13px; line-height:1; font-weight:600;
+}
+.inc:hover{border-color:var(--accent); color:var(--accent)}
+.inc.on{background:var(--accent); border-color:var(--accent); color:#fff}
 .empty{padding:44px 20px; text-align:center; color:var(--ink-3); font-size:14px}
 mark{background:var(--accent-soft); color:inherit; border-radius:3px; padding:0 2px}
 
@@ -288,13 +295,14 @@ textarea:focus{outline:none; border-color:var(--accent)}
 const DEFAULT_RULES = {
   // The real keyword lists live on the server and arrive after you unlock.
   // Nothing about what you buy or who you buy it from ships in this file.
-  subs:[], vendor:[], ew:[], half:[], review:[]
+  subs:[], vendor:[], ew:[], half:[], always:[], review:[]
 };
 const RULE_META = {
   subs:  {name:"Recurring subscriptions", why:"Deducted in full. Matches only rows typed Recurring Card Purchase."},
   vendor:{name:"Vendor purchases",        why:"Deducted in full. Matches Card Purchase and Card Purchase With Pin."},
   ew:    {name:"Electronic withdrawals",  why:"Deducted in full. Matches only rows typed Electronic Withdrawal."},
   half:  {name:"Half rule",               why:"Half the amount is deducted. Part business, part personal."},
+  always:{name:"Always counted", why:"Deducted in full whatever kind of row it is. A row you counted by hand ends up here."},
   review:{name:"Flag for a look",         why:"Never deducted. Highlighted so you can decide each month."}
 };
 
@@ -303,6 +311,7 @@ function classify(row, R){
   const t = row.t || "", d = (row.c || "").toLowerCase(), a = Number(row.a) || 0;
   const hit = list => (R[list] || []).some(k => d.includes(k));
   if (row.x)                                            return {f:0, rule:"Excluded",  kind:"off"};
+  if (row.i)                                            return {f:a, rule:"Counted by hand", kind:"on"};
   if (t === "Check Paid")                               return {f:-Math.abs(a), rule:"Check paid", kind:"on"};
   if (t === "Deposit" || t === "Refund")                return {f:a, rule:"Deposit", kind:"on"};
   if (t === "Recurring Card Purchase" && hit("subs"))   return {f:-Math.abs(a), rule:"Subscription", kind:"on"};
@@ -314,6 +323,7 @@ function classify(row, R){
   if (d.includes("apple cash"))                         return {f:-Math.abs(a), rule:"Apple Cash", kind:"on"};
   if (t === "Electronic Withdrawal" && hit("half"))     return {f:-Math.abs(a)/2, rule:"Half rule", kind:"on"};
   if (t === "Fee" && d.includes("monthly service fee")) return {f:-Math.abs(a), rule:"Monthly fee", kind:"on"};
+  if (hit("always"))                                    return {f:a, rule:"Counted", kind:"on"};
   if (hit("review"))                                    return {f:0, rule:"Take a look", kind:"look"};
   return {f:0, rule:"", kind:""};
 }
@@ -745,11 +755,17 @@ function renderRows(){
         <td class="r-amt num ${r.a < 0 ? "neg" : "pos"}">${money(r.a)}</td>
         <td class="r-cnt num">${c.f ? money(c.f) : '<span style="color:var(--ink-3)">—</span>'}</td>
         <td>${tag}</td>
-        <td><button class="tog" aria-pressed="${!!r.x}" data-m="${r._id}" data-i="${r._i}"
-             title="${r.x ? "Put back in" : "Leave this one out"}">${r.x ? "✕" : ""}</button></td>
+        <td>${rowControl(r, c)}</td>
       </tr>`;
     }).join("");
-    body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => toggle(b.dataset.m, +b.dataset.i)));
+    body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => setFlag(b.dataset.m, +b.dataset.i, "x")));
+    body.querySelectorAll(".inc").forEach(b => b.addEventListener("click", () => {
+      const m = S.months.find(x => x.id === b.dataset.m);
+      const row = m && m.rows[+b.dataset.i];
+      if (!row) return;
+      if (row.i) setFlag(b.dataset.m, +b.dataset.i, "i");        // already counted by hand: put it back
+      else includePanel(b.dataset.m, +b.dataset.i, row);
+    }));
   }
   const c = $(".count"); if (c) c.remove();
   $(".bar").insertAdjacentHTML("beforeend",
@@ -767,18 +783,103 @@ function renderMonths(){
     b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
 }
 
-async function toggle(monthId, i){
+/** Set or clear one flag on one row: "x" to leave out, "i" to count by hand. */
+async function setFlag(monthId, i, flag, value){
   const m = S.months.find(x => x.id === monthId);
   if (!m) return;
   const before = m.rows;
-  const rows = m.rows.map((r,k) => k === i ? {...r, x: r.x ? 0 : 1} : r);
+  const next = value === undefined ? (m.rows[i][flag] ? 0 : 1) : value;
+  const rows = m.rows.map((r,k) => k === i ? {...r, [flag]: next, ...(next ? {[flag === "x" ? "i" : "x"]: 0} : {})} : r);
   m.rows = rows;
   render();
   try { await api("/months/" + monthId, {method:"PUT", body:{label:m.label, rows}}); }
   catch(e){
-    m.rows = before; render();          // put it back rather than lie about it
+    m.rows = before; render();
     if (e.message !== "Locked") alert("That change didn't save. " + e.message);
   }
+}
+
+/** The one control on each row. What it offers depends on what the row is doing. */
+function rowControl(r, c){
+  const at = `data-m="${r._id}" data-i="${r._i}"`;
+  if (r.x) return `<button class="tog" ${at} aria-pressed="true" title="Put this back in">✕</button>`;
+  if (r.i) return `<button class="inc on" ${at} title="Stop counting this">✓</button>`;
+  if (c.f) return `<button class="tog" ${at} aria-pressed="false" title="Leave this one out"></button>`;
+  return `<button class="inc" ${at} title="Count this one">+</button>`;
+}
+
+/**
+ * Turn a description into a keyword worth learning: drop the phone number, the
+ * trailing state, the store number, and keep the name at the front.
+ */
+function suggestKeyword(desc){
+  // Chase writes MERCHANT then town then state. The town is the part that will
+  // differ next time he buys the same thing somewhere else, so it goes.
+  const TOWNS = ["lafayette","opelousas","broussard","maurice","rayne","carencro","scott",
+    "duson","crowley","new iberia","lake charles","jennings","covington","henderson",
+    "gonzales","denham spring","grand coteau","iowa","nacogdoches","palo alto","singapore",
+    "kinder","coral springs","baton rouge","columbia","brou ssard"];
+  let d = String(desc || "").toLowerCase()
+    .replace(/\b\d{3}[- ]\d{3}[- ]?\d{4}\b/g, " ")        // phone number
+    .replace(/\b[a-z]*\d[a-z0-9]{5,}\b/g, " ")             // order and reference codes
+    .replace(/\b\d{4,}\b/g, " ")                           // bare reference numbers
+    .replace(/[#*].*$/, " ")                                // store number onward
+    .replace(/\b(la|tx|ca|ms|ar|mn|wa|or|ks|fl|ne|nv|hi)\b\s*$/, " ")
+    .replace(/\s+/g, " ").trim();
+  for (const t of TOWNS) {
+    const at = d.lastIndexOf(t);
+    if (at > 3 && at + t.length >= d.length - 3) {
+      const cut = d.slice(0, at).trim();
+      // "CITY OF BROUSSARD" is a payee, not a merchant in Broussard. If taking the
+      // town away leaves a dangling word, the town was part of the name.
+      if (cut.length >= 6 && !/\b(of|the|at|in|for|and|to)$/.test(cut)) d = cut;
+      break;
+    }
+  }
+  return d.replace(/\b(us|inc|llc)\s*$/, "").replace(/\s+/g, " ").trim().slice(0, 34);
+}
+
+/** Which list a learned keyword belongs in, given the row's type. */
+function listFor(type){
+  if (type === "Recurring Card Purchase") return "subs";
+  if (type === "Card Purchase" || type === "Card Purchase With Pin") return "vendor";
+  if (type === "Electronic Withdrawal") return "ew";
+  return "always";   // transfers, Zelle, ATM and the rest match on description alone
+}
+
+/** Count this row — once, or from now on. */
+function includePanel(monthId, i, row){
+  const list = listFor(row.t);
+  const s = panel("Count this one", `
+    <p class="hint">${esc(row.c)}<br><span style="color:var(--ink-3)">${esc(row.t)} &middot; ${money(row.a)}</span></p>
+    <form id="incform">
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3);font-weight:600;margin:16px 0 6px">Count anything containing</label>
+      <input id="kw" type="text" value="${esc(suggestKeyword(row.c))}"
+             style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:13px">
+      <p class="fine" style="margin-top:8px">Joins <b>${RULE_META[list].name.toLowerCase()}</b>, and re-figures every month you have,
+        this one included. Trim it back to just the name if the rest is likely to change.</p>
+      <p class="err" id="ierr" hidden></p>
+      <div class="pfoot">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn" type="button" id="once">Just this row</button>
+        <button class="btn primary" type="submit">Count these from now on</button>
+      </div>
+    </form>`);
+
+  s.querySelector("#once").addEventListener("click", () => { setFlag(monthId, i, "i", 1); s.remove(); });
+
+  s.querySelector("#incform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const kw = s.querySelector("#kw").value.trim().toLowerCase();
+    const err = s.querySelector("#ierr");
+    if (kw.length < 3){ err.hidden = false; err.textContent = "That is too short to match on safely."; return; }
+    if (!row.c.toLowerCase().includes(kw)){
+      err.hidden = false; err.textContent = "That does not appear in this row, so it would not match it.";
+      return;
+    }
+    await saveRules({...S.rules, [list]: [...(S.rules[list] || []), kw]});
+    s.remove();
+  });
 }
 
 /* ============ panels ============ */
