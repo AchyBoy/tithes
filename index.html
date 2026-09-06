@@ -1244,8 +1244,19 @@ function renderRecurring(){
   const goneMonth = gone.reduce((n,i) => n + i.amount, 0);
   const q = S.q.trim().toLowerCase();
 
-  const row = i => `<tr class="rec" data-key="${esc(i.key)}">
-      <td class="r-date num" style="text-align:center">${String(i.day).padStart(2,"0")}</td>
+  // The month reads forward from today: the next charge sits at the top, and
+  // anything whose day has already passed drops to next month, where it is due.
+  const now = new Date(), dom = now.getDate();
+  const MON = ["January","February","March","April","May","June","July",
+               "August","September","October","November","December"];
+  const thisMon = MON[now.getMonth()], nextMon = MON[(now.getMonth() + 1) % 12];
+  const ahead = live.filter(i => i.day >= dom), after = live.filter(i => i.day < dom);
+  const sum = l => l.reduce((n,i) => n + i.amount, 0);
+  const byDay = (a,b) => a.day - b.day;
+
+  const row = (i, mon) => `<tr class="rec" data-key="${esc(i.key)}">
+      <td class="r-date num" style="text-align:center">${String(i.day).padStart(2,"0")}${
+        mon ? `<br><small style="color:var(--ink-3)">${mon.slice(0,3)}</small>` : ""}</td>
       <td class="r-desc">${hl(i.name, q)}${i.range
           ? `<br><small style="color:var(--ink-3)">between ${money(i.range[0])} and ${money(i.range[1])}</small>` : ""}
         ${!i.live ? `<br><small style="color:var(--park)">nothing since ${esc(i.lastMonth || "")}</small>` : ""}
@@ -1259,6 +1270,8 @@ function renderRecurring(){
     </tr>`;
 
   const show = list => list.filter(i => !q || (i.name + " " + i.key).toLowerCase().includes(q));
+  const shownAhead = show(ahead).sort(byDay), shownAfter = show(after).sort(byDay);
+  const grp = (head, tail) => `<tr class="grp"><td colspan="6"><b>${head}</b> &mdash; ${tail}</td></tr>`;
 
   main.innerHTML = `
     <section class="summary">
@@ -1270,9 +1283,9 @@ function renderRecurring(){
       <div class="cell"><div class="k">Biggest</div>
         <div class="v num">${live.length ? money(live[0].amount) : "—"}</div>
         <div class="sub">${live.length ? esc(live[0].name.slice(0,26)) : ""}</div></div>
-      <div class="cell"><div class="k">Busiest day</div>
-        <div class="v num">${live.length ? busiestDay(live) : "—"}</div>
-        <div class="sub">of the month</div></div>
+      <div class="cell"><div class="k">Still to come</div>
+        <div class="v num">${money(sum(ahead))}</div>
+        <div class="sub">${ahead.length} left in ${thisMon}</div></div>
       <div class="cell"><div class="k">Stopped</div>
         <div class="v num" style="color:${gone.length ? "var(--park)" : "var(--ink-3)"}">${gone.length}</div>
         <div class="sub">${gone.length ? money(goneMonth) + " a month" : "none"}</div></div>
@@ -1293,9 +1306,14 @@ function renderRecurring(){
         <th class="r-amt">Each time</th><th class="r-amt">A year</th>
         <th class="r-amt">Months</th><th></th></tr></thead>
       <tbody>
-        ${show(live).map(row).join("")}
-        ${gone.length ? `<tr class="grp"><td colspan="6"><b>Not billing any more</b>
-          &mdash; worth checking these were meant to stop</td></tr>` + show(gone).map(row).join("") : ""}
+        ${shownAhead.length ? grp(`Still to come in ${thisMon}`,
+            `${money(sum(shownAhead))} between the ${dom}${ord(dom)} and the end of the month`) : ""}
+        ${shownAhead.map(i => row(i, thisMon)).join("")}
+        ${shownAfter.length ? grp(`Then in ${nextMon}`,
+            `${money(sum(shownAfter))}, already gone out this month`) : ""}
+        ${shownAfter.map(i => row(i, nextMon)).join("")}
+        ${gone.length ? grp("Not billing any more", "worth checking these were meant to stop")
+            + show(gone).map(i => row(i)).join("") : ""}
       </tbody>
     </table></div>
     <div id="drill"></div>`;
@@ -1312,11 +1330,10 @@ function renderRecurring(){
   }));
 }
 
-function busiestDay(list){
-  const t = {};
-  for (const i of list) t[i.day] = (t[i.day] || 0) + 1;
-  const best = Object.entries(t).sort((a,b) => b[1] - a[1])[0];
-  return best ? String(best[0]).padStart(2,"0") : "—";
+/** 1st, 2nd, 3rd, 4th — the 11th to the 13th are the ones that catch you out. */
+function ord(n){
+  if (n % 100 >= 11 && n % 100 <= 13) return "th";
+  return ["th","st","nd","rd"][n % 10] || "th";
 }
 
 function showCharges(item){
