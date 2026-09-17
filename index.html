@@ -278,6 +278,29 @@ textarea:focus{outline:none; border-color:var(--accent)}
   .summary{grid-template-columns:1fr 1fr}
   .owed{grid-column:1/-1}
 }
+/* ---------- forecast ---------- */
+.fcbar{display:flex; gap:10px; align-items:center; margin:22px 0 12px; flex-wrap:wrap}
+.fcbal{display:flex; align-items:center; gap:9px; background:var(--surface);
+  border:1px solid var(--line); border-radius:var(--r); padding:0 12px}
+.fcbal span{font-size:12px; color:var(--ink-3); white-space:nowrap}
+.fcbal input{border:0; background:none; color:var(--ink); font:inherit; font-weight:600;
+  padding:10px 0; width:120px; text-align:right}
+.fcbal input:focus{outline:none}
+.lag{display:flex; align-items:center; gap:7px; font-size:12px; color:var(--ink-3)}
+.lag input{width:46px; text-align:center; padding:7px 4px; border:1px solid var(--line);
+  border-radius:8px; background:var(--surface); color:var(--ink); font:inherit; font-weight:600}
+table.fctab{min-width:0}
+table.fctab .r-desc{min-width:0}
+table.fctab td:first-child,table.fctab th:first-child{white-space:nowrap}
+@media (max-width:430px){table.fctab td,table.fctab th{padding-left:8px; padding-right:8px; font-size:12.5px}}
+tr.day td{background:var(--sunk); font-weight:600; font-size:12.5px}
+tr.low td{background:var(--park-soft)}
+tr.under td{background:var(--park-soft); color:var(--warn)}
+.pick{display:flex; align-items:center; gap:10px; cursor:pointer}
+.pick input[type="checkbox"]{width:17px; height:17px; accent-color:var(--accent); flex:none; cursor:pointer}
+.why{font-size:11px; color:var(--ink-3)}
+.late{color:var(--park); font-weight:600}
+.bal{font-variant-numeric:tabular-nums; font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
 </style>
 </head>
@@ -291,7 +314,8 @@ textarea:focus{outline:none; border-color:var(--accent)}
         <span class="seg">
           <button class="btn" data-view="ledger">Ledger</button
           ><button class="btn" data-view="books">Books</button
-          ><button class="btn" data-view="recurring">Recurring</button>
+          ><button class="btn" data-view="recurring">Recurring</button
+          ><button class="btn" data-view="forecast">Forecast</button>
         </span>
         <button class="btn" id="btnLock">Lock</button>
         <button class="btn" id="btnPw">Password</button>
@@ -486,8 +510,18 @@ function guessMonth(rows){
 /* ============ state ============ */
 const API = "https://api.jobhubgo.com/api/tithes";
 const money = n => (n < 0 ? "-" : "") + "$" + Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2, maximumFractionDigits:2});
+const FC_DEFAULT = {
+  balance: null,     // what the bank says right now — the only figure he types
+  asOf: null,        // the day he typed it, so the page can tell him it's going stale
+  lag: 14,           // "Due on receipt" means nothing to a forecast; this is the real wait
+  horizon: 45,
+  off: [],           // recurring keys and invoice ids he unticked
+  on: [],            // late and unsent ones he ticked back on
+  dates: {},         // invoice id -> the day he actually expects it
+  entries: []        // anything neither list knows about
+};
 const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
-           locked:true, ready:false, offline:false};
+           locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}};
 const $ = s => document.querySelector(s);
 
 /* ---------- the key to the back door ---------- */
@@ -520,8 +554,14 @@ async function api(path, opts = {}){
 }
 
 async function loadAll(){
-  const [m, r, c, x] = await Promise.all([api("/months"), api("/config/rules"),
-                                          api("/config/categories"), api("/config/recurring")]);
+  // The forecast's two extra calls are allowed to fail on their own. They came
+  // later than the rest of the page and an older backend answers 404 to both;
+  // losing the ledger over a missing forecast would be a poor trade.
+  const [m, r, c, x, f, inv] = await Promise.all([
+    api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
+    api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({}))]);
+  S.invoices = (inv && inv.invoices) || [];
+  S.fc = {...FC_DEFAULT, ...((f && f.forecast) || {})};
   S.months = (m.months || []).map(x => ({id:x.key, key:x.key, label:x.label, rows:x.rows || []}));
   if (r && r.rules) S.rules = {...DEFAULT_RULES, ...r.rules};
   S.cats = (c && c.categories) || {};
@@ -680,6 +720,7 @@ function render(){
     main.innerHTML = '<div class="offline">Couldn&rsquo;t reach the ledger just now. Reload in a moment.</div>';
     return;
   }
+  if (S.view === "forecast") return renderForecast();
   const m = S.months.find(x => x.id === S.cur);
   if (!m){
     main.innerHTML = '<div class="offline">No months yet. Choose <b>Paste a month</b> and drop in a Chase export.</div>';
@@ -1417,6 +1458,364 @@ function addRecurringPanel(found){
 }
 
 /* ============ panels ============ */
+/* ============ forecast — where the balance goes, day by day ============ */
+
+const DAY_MS = 86400000;
+const ymd = d => d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+// Never new Date("2026-09-20") — that is UTC midnight, which is the 19th here.
+const fromYmd = s => { const [y,m,d] = String(s||"").split("-").map(Number);
+  return (y && m && d) ? new Date(y, m-1, d) : null; };
+const startOfToday = () => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); };
+const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MON3 = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function dayName(d, t0){
+  const gap = Math.round((d - t0) / DAY_MS);
+  if (gap === 0) return "Today";
+  if (gap === 1) return "Tomorrow";
+  return DOW[d.getDay()] + " " + MON3[d.getMonth()] + " " + d.getDate();
+}
+
+/** The same day, stacked, so the column stays narrow enough for a phone. */
+function dayCell(d, t0){
+  const gap = Math.round((d - t0) / DAY_MS);
+  if (gap === 0 || gap === 1) return dayName(d, t0);
+  return DOW[d.getDay()] + "<br>" + MON3[d.getMonth()] + " " + d.getDate();
+}
+
+/** Every time a monthly charge falls inside the window. The 31st of a short month lands on its last day. */
+function monthlyDates(day, from, to){
+  const out = [];
+  let y = from.getFullYear(), m = from.getMonth();
+  for (let guard = 0; guard < 26; guard++){
+    const last = new Date(y, m+1, 0).getDate();
+    const d = new Date(y, m, Math.min(day, last));
+    if (d >= from && d <= to) out.push(d);
+    if (d > to) break;
+    m++; if (m > 11){ m = 0; y++; }
+  }
+  return out;
+}
+
+/** Ticked or not. Everything states its own default; only his overrides are stored. */
+function fcOn(id, byDefault){
+  if (S.fc.off.includes(id)) return false;
+  if (S.fc.on.includes(id)) return true;
+  return byDefault;
+}
+
+async function fcToggle(id, wasOn){
+  const off = S.fc.off.filter(x => x !== id), on = S.fc.on.filter(x => x !== id);
+  (wasOn ? off : on).push(id);
+  await saveForecast({...S.fc, off, on});
+}
+
+/**
+ * When the money actually turns up.
+ *
+ * A real due date in the future is taken at its word. Everything else is "Due on
+ * receipt", which tells a forecast nothing, so it waits the number of days he
+ * set from the day it was sent. Any day he types himself beats both.
+ */
+function invoiceDate(v){
+  if (S.fc.dates[v.id]) return fromYmd(S.fc.dates[v.id]);
+  const t0 = startOfToday();
+  const due = fromYmd(v.expected);
+  if (due && due > t0) return due;
+  const base = fromYmd(v.sent) || fromYmd(v.issued) || t0;
+  return new Date(base.getTime() + (Number(S.fc.lag) || 0) * DAY_MS);
+}
+
+/** Late, unsent, or neither. A draft was never sent, so nobody owes it yet. */
+function invoiceState(v){
+  if (v.draft) return "unsent";
+  return invoiceDate(v) < startOfToday() ? "late" : "due";
+}
+
+/**
+ * The whole projection.
+ *
+ * Money out he can count on, money in he has ticked, and anything he added by
+ * hand — laid on a calendar from today forward, with the balance carried along.
+ */
+function fcPlan(){
+  const t0 = startOfToday();
+  const end = new Date(t0.getTime() + (Number(S.fc.horizon) || 45) * DAY_MS);
+  const ev = [];
+
+  const {items} = findRecurring();
+  const bills = items.filter(i => i.live);
+  for (const i of bills){
+    if (!fcOn("r:" + i.key, true)) continue;
+    for (const d of monthlyDates(i.day, t0, end))
+      ev.push({date:d, name:i.name, amount:-i.amount, kind:"bill"});
+  }
+
+  for (const v of S.invoices){
+    const st = invoiceState(v);
+    if (!fcOn("i:" + v.id, st === "due")) continue;
+    // He ticked on something already past. That is him saying he expects it now,
+    // not that it arrived a fortnight ago, so it lands at the front of the window.
+    let d = invoiceDate(v);
+    if (d < t0) d = t0;
+    if (d > end) continue;
+    ev.push({date:d, name:(v.who || "Invoice") + " " + v.number, amount:v.amount, kind:"inv", late:st !== "due"});
+  }
+
+  for (const e of S.fc.entries){
+    if (!fcOn("e:" + e.id, true)) continue;
+    const amt = (e.dir === "out" ? -1 : 1) * Math.abs(Number(e.amount) || 0);
+    const first = fromYmd(e.date);
+    if (!first) continue;
+    const dates = e.every === "month" ? monthlyDates(first.getDate(), t0, end)
+                                      : (first >= t0 && first <= end ? [first] : []);
+    for (const d of dates) ev.push({date:d, name:e.name || "Entry", amount:amt, kind:"mine"});
+  }
+
+  ev.sort((a,b) => a.date - b.date || a.amount - b.amount);
+
+  let bal = Number(S.fc.balance) || 0;
+  const days = [];
+  let low = {bal, date:t0};
+  for (const e of ev){
+    const key = ymd(e.date);
+    let d = days[days.length-1];
+    if (!d || d.key !== key){ d = {key, date:e.date, events:[], open:bal, close:bal}; days.push(d); }
+    bal += e.amount;
+    d.events.push(e); d.close = bal;
+    if (bal < low.bal) low = {bal, date:e.date, name:e.name};
+  }
+  const inSum  = ev.filter(e => e.amount > 0).reduce((n,e) => n + e.amount, 0);
+  const outSum = ev.filter(e => e.amount < 0).reduce((n,e) => n - e.amount, 0);
+  return {days, ev, end, t0, low, inSum, outSum, close:bal, bills};
+}
+
+async function saveForecast(next){
+  const before = S.fc;
+  S.fc = next; renderForecast();
+  try { await api("/config/forecast", {method:"PUT", body:{forecast:next}}); }
+  catch(e){
+    S.fc = before; renderForecast();
+    if (e.message !== "Locked") alert("That didn't save. " + e.message);
+  }
+}
+
+function renderForecast(){
+  const main = $("#main");
+  const f = S.fc, P = fcPlan();
+  // Number(null) is 0, so this has to ask whether he typed anything at all —
+  // testing the number would read an empty box as a zero balance.
+  const noBalance = f.balance === null || f.balance === undefined || f.balance === "";
+  const stale = f.asOf && f.asOf !== ymd(P.t0);
+
+  const dip = P.low.bal < 0;
+  const invOpen = S.invoices.reduce((n,v) => n + v.amount, 0);
+
+  // Four columns, not five. A phone is where this gets looked at, and the
+  // balance is the only column he came for — splitting in and out pushed it off
+  // the side of the screen to say something the sign already says.
+  const what = e => esc(e.name) + (e.late ? ' <span class="late">late</span>' : "");
+  const dayRow = d => {
+    const net = d.close - d.open;
+    const cls = `day ${d.key === ymd(P.low.date) ? "low" : ""} ${d.close < 0 ? "under" : ""}`;
+    // Most days carry one charge. Giving it a heading and then a line of its own
+    // doubled the page for nothing, so a lone event sits on the day's own row.
+    if (d.events.length === 1) return `
+    <tr class="${cls}">
+      <td>${dayCell(d.date, P.t0)}</td>
+      <td class="r-desc" style="font-weight:400">${what(d.events[0])}</td>
+      <td class="r-amt num ${net > 0 ? "pos" : "neg"}">${money(net)}</td>
+      <td class="r-amt num bal">${money(d.close)}</td>
+    </tr>`;
+    return `
+    <tr class="${cls}">
+      <td colspan="2">${dayCell(d.date, P.t0)}</td>
+      <td class="r-amt num ${net > 0 ? "pos" : "neg"}">${money(net)}</td>
+      <td class="r-amt num bal">${money(d.close)}</td>
+    </tr>` + d.events.map(e => `
+    <tr>
+      <td></td>
+      <td class="r-desc">${what(e)}</td>
+      <td class="r-amt num ${e.amount > 0 ? "pos" : "neg"}">${money(e.amount)}</td>
+      <td></td>
+    </tr>`).join("");
+  };
+
+  const tick = (id, on, label, sub, amt, extra) => `
+    <tr>
+      <td style="width:34px"><label class="pick"><input type="checkbox" data-tick="${esc(id)}" ${on ? "checked" : ""}></label></td>
+      <td class="r-desc">${esc(label)}${sub ? `<br><small class="why">${sub}</small>` : ""}</td>
+      <td class="r-amt num ${amt > 0 ? "pos" : "neg"}">${money(amt)}</td>
+      <td class="r-amt">${extra || ""}</td>
+    </tr>`;
+
+  const billRows = P.bills.map(i => tick("r:" + i.key, fcOn("r:" + i.key, true), i.name,
+      "the " + i.day + ord(i.day) + " of the month", -i.amount, "")).join("");
+
+  const invRows = S.invoices.map(v => {
+    const st = invoiceState(v), on = fcOn("i:" + v.id, st === "due");
+    const d = invoiceDate(v);
+    const why = st === "unsent" ? '<span class="late">never sent</span>'
+      : st === "late" ? `<span class="late">expected ${MON3[d.getMonth()]} ${d.getDate()}, still not in</span>`
+      : (v.number ? esc(v.number) + " &middot; " : "") + (S.fc.dates[v.id] ? "you set this day" : "sent " + (v.sent || v.issued || "—"));
+    return tick("i:" + v.id, on, v.who || "Someone", why, v.amount,
+      `<input type="date" data-when="${esc(v.id)}" value="${ymd(d)}"
+         style="border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12px;padding:5px 7px">`);
+  }).join("");
+
+  const mineRows = S.fc.entries.map(e => tick("e:" + e.id, fcOn("e:" + e.id, true), e.name || "Entry",
+      (e.every === "month" ? "every month on the " + fromYmd(e.date).getDate() + ord(fromYmd(e.date).getDate()) : "once, " + e.date),
+      (e.dir === "out" ? -1 : 1) * Math.abs(Number(e.amount) || 0),
+      `<button class="btn" style="padding:3px 9px;font-size:12px" data-delent="${esc(e.id)}">Remove</button>`)).join("");
+
+  const grp = (head, tail) => `<tr class="grp"><td colspan="4"><b>${head}</b>${tail ? " &mdash; " + tail : ""}</td></tr>`;
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed">
+        <div class="k">${dip ? "You run out" : "Lowest you get"}</div>
+        <div class="v num" style="${dip ? "color:var(--warn)" : ""}">${noBalance ? "—" : money(P.low.bal)}</div>
+        <div class="sub">${noBalance ? "put your balance in above"
+          : (ymd(P.low.date) === ymd(P.t0) ? "today, before anything moves"
+             : dayName(P.low.date, P.t0) + (P.low.name ? ", after " + esc(String(P.low.name).slice(0,24)) : ""))}</div>
+      </div>
+      <div class="cell"><div class="k">Coming in</div>
+        <div class="v num pos">${money(P.inSum)}</div>
+        <div class="sub">${money(invOpen)} owed in total</div></div>
+      <div class="cell"><div class="k">Going out</div>
+        <div class="v num neg">${money(-P.outSum)}</div>
+        <div class="sub">${P.bills.length} charges a month</div></div>
+      <div class="cell"><div class="k">Where you end</div>
+        <div class="v num">${noBalance ? "—" : money(P.close)}</div>
+        <div class="sub">${MON3[P.end.getMonth()]} ${P.end.getDate()}</div></div>
+    </section>
+
+    ${stale ? `<div class="drift"><b>Heads up.</b><span>That balance was typed on ${esc(f.asOf)}.
+      Anything that has moved since is not in here.</span></div>` : ""}
+
+    <div class="fcbar">
+      <label class="fcbal">
+        <span>Balance today</span>
+        <input id="fcbal" inputmode="decimal" placeholder="0.00"
+               value="${noBalance ? "" : Number(f.balance).toFixed(2)}">
+      </label>
+      <span class="seg">
+        ${[30,45,60,90].map(n => `<button class="btn" data-days="${n}"
+           aria-pressed="${Number(f.horizon) === n}">${n}d</button>`).join("")}
+      </span>
+      <label class="lag">paid about <input id="fclag" inputmode="numeric" value="${Number(f.lag) || 0}"> days after sending</label>
+      <button class="chip" id="fcAdd">Add an entry</button>
+    </div>
+
+    ${noBalance ? `<div class="offline">Put in what the bank says right now and the rest fills in.</div>` : `
+    <div class="scroll"><table class="fctab">
+      <thead><tr><th>Day</th><th>What</th>
+        <th class="r-amt">In or out</th><th class="r-amt">Balance</th></tr></thead>
+      <tbody>
+        ${P.days.length ? P.days.map(dayRow).join("")
+          : `<tr><td colspan="4" style="color:var(--ink-3);padding:18px">Nothing ticked lands in the next ${Number(f.horizon)||45} days.</td></tr>`}
+      </tbody>
+    </table></div>`}
+
+    <div class="bar"><span class="count" style="margin-left:0">Only what is ticked below is counted. Untick anything you are not counting on.</span></div>
+    <div class="scroll"><table class="fctab">
+      <tbody>
+        ${grp("Coming out", "worked out from your months")}
+        ${billRows || `<tr><td colspan="4" style="color:var(--ink-3);padding:14px">Nothing recurring yet.</td></tr>`}
+        ${grp("Coming in", money(invOpen) + " still owed across " + S.invoices.length + " invoices")}
+        ${invRows || `<tr><td colspan="4" style="color:var(--ink-3);padding:14px">Nothing outstanding.</td></tr>`}
+        ${S.fc.entries.length ? grp("Yours", "added by hand") + mineRows : ""}
+      </tbody>
+    </table></div>`;
+
+  const bal = $("#fcbal");
+  bal.addEventListener("change", () => {
+    const v = Number(String(bal.value).replace(/[^0-9.\-]/g, ""));
+    saveForecast({...f, balance: Number.isFinite(v) ? v : null, asOf: ymd(P.t0)});
+  });
+  $("#fclag").addEventListener("change", e => {
+    const n = Math.max(0, Math.min(180, Number(e.target.value) || 0));
+    saveForecast({...f, lag:n});
+  });
+  main.querySelectorAll("[data-days]").forEach(b => b.addEventListener("click",
+    () => saveForecast({...f, horizon:Number(b.dataset.days)})));
+  main.querySelectorAll("[data-tick]").forEach(c => c.addEventListener("change",
+    () => fcToggle(c.dataset.tick, !c.checked)));
+  main.querySelectorAll("[data-when]").forEach(i => i.addEventListener("change", () => {
+    const id = i.dataset.when;
+    const dates = {...S.fc.dates};
+    if (i.value) dates[id] = i.value; else delete dates[id];
+    // Giving a late one a day is him saying he expects it, so it ticks itself on.
+    const on = S.fc.on.includes(id) ? S.fc.on : [...S.fc.on, "i:" + id];
+    saveForecast({...S.fc, dates, on, off:S.fc.off.filter(x => x !== "i:" + id)});
+  }));
+  main.querySelectorAll("[data-delent]").forEach(b => b.addEventListener("click",
+    () => saveForecast({...S.fc, entries:S.fc.entries.filter(e => e.id !== b.dataset.delent)})));
+  $("#fcAdd").addEventListener("click", () => entryPanel());
+}
+
+/** Anything neither the bank months nor JobHub knows about: a draw, a wire, a loan payment. */
+function entryPanel(){
+  const t0 = startOfToday();
+  const s = panel("Add an entry", `
+    <form id="entform">
+      <p class="hint" style="margin-top:0">Something coming in or going out that isn&rsquo;t in either list.</p>
+      <label class="fine" for="ename">What is it</label>
+      <input id="ename" type="text" placeholder="Truck note" required
+             style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit">
+      <div style="display:flex;gap:10px;margin-top:11px">
+        <div style="flex:1">
+          <label class="fine" for="eamt">How much</label>
+          <input id="eamt" inputmode="decimal" placeholder="0.00" required
+                 style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit">
+        </div>
+        <div style="flex:1">
+          <label class="fine" for="edate">When</label>
+          <input id="edate" type="date" value="${ymd(t0)}" required
+                 style="width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:13px;flex-wrap:wrap">
+        <span class="seg">
+          <button type="button" class="btn" data-dir="out" aria-pressed="true">Going out</button
+          ><button type="button" class="btn" data-dir="in" aria-pressed="false">Coming in</button>
+        </span>
+        <button type="button" class="chip" id="erep" aria-pressed="false">Every month</button>
+      </div>
+      <p class="err" id="eerr" hidden></p>
+      <div class="pfoot">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit">Add it</button>
+      </div>
+    </form>`);
+  let dir = "out", every = "once";
+  s.querySelectorAll("[data-dir]").forEach(b => b.addEventListener("click", () => {
+    dir = b.dataset.dir;
+    s.querySelectorAll("[data-dir]").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.dir === dir)));
+  }));
+  const rep = s.querySelector("#erep");
+  rep.addEventListener("click", () => {
+    every = every === "once" ? "month" : "once";
+    rep.setAttribute("aria-pressed", String(every === "month"));
+  });
+  s.querySelector("#entform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const amount = Number(String(s.querySelector("#eamt").value).replace(/[^0-9.\-]/g, ""));
+    const err = s.querySelector("#eerr");
+    if (!Number.isFinite(amount) || amount === 0){
+      err.textContent = "That amount didn't read as a number."; err.hidden = false; return;
+    }
+    const entry = {
+      id: "e" + Date.now().toString(36),
+      name: s.querySelector("#ename").value.trim(),
+      amount: Math.abs(amount), dir, every,
+      date: s.querySelector("#edate").value
+    };
+    s.remove();
+    await saveForecast({...S.fc, entries:[...S.fc.entries, entry]});
+  });
+}
+
 function panel(title, inner){
   const s = document.createElement("div");
   s.className = "scrim";
