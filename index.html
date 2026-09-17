@@ -401,30 +401,20 @@ function splitRow(line){
   return out.map(s => s.trim());
 }
 
-const ACH = [
-  ["ANDRIES BUILDERS","Andries Builders \u2013 ACH (Foch Electrical CCD)"],
-  ["CITI CARD ONLINE","Citi Card Online Payment"],
-  ["CHASE CREDIT CRD","Chase Credit Crd Autopay"],
-  ["ALLIANT CU","Alliant CU \u2013 Dep-Pymt"],
-  ["ALLY","Ally Payment"],
-  ["IPFS","IPFS800-247-6129"],
-  ["LCI PREM TRUST","LCI Premium Trust \u2013 Corp Coll"],
-  ["LOWES","Lowes Payment"],
-  ["LA FARM BUREAU","LA Farm Bureau Insurance"],
-  ["ATT ","AT&T Payment"],
-  ["IRS","IRS"],
-  ["LOUISIANA REVEN","LOUISIANA REVEN"],
-  ["SBA LOAN","SBA Loan Payment"],
-  ["TD AUTO FINANCE","TD Auto Finance \u2013 Web Pay"],
-  ["NORTHWESTERN MU","NORTHWESTERN MU"],
-  ["NATIONAL RECOVER","National Recover"],
-  ["SANTANDER","SANTANDER"],
-  ["PLANET CONSTRUCT","Planet Construct \u2013 ACH (Foch Electrical CCD)"],
-  ["STRIPE","Stripe \u2013 Transfer"]
-];
-const SUBS_DESC = [["GOOGLE *WORKSPACE","Google Workspace"],["ANTHROPIC","Anthropic / Claude Subscription"],
-                   ["RAILWAY","Railway \u2013 Railway.com"],["COMPANYCAM","CompanyCam"],
-                   ["650 INDUSTRIES","650 Industries (Expo) \u2013 Expo.dev"]];
+/**
+ * How a bank line becomes a readable payee.
+ *
+ * 🔴 Empty here on purpose, and it must stay empty. This repo is public — Pages
+ * needs it public on his plan — and the real table is a list of who he owes and
+ * who pays him, which is nobody else's business. It lives in
+ * `tithe_config.names` and arrives after unlock, exactly like the rule keywords.
+ * Do not re-inline it, and do not name one in a comment either.
+ *
+ * Until it arrives a description simply stays as the bank wrote it, which is
+ * untidy but tells nobody anything.
+ */
+let ACH = [];
+let SUBS_DESC = [];
 
 function tidy(s){
   return s.replace(/\s+\d{2}\/\d{2}$/,"").replace(/\s+\d{6}\s*$/,"").replace(/\s+/g," ").trim();
@@ -557,10 +547,18 @@ async function loadAll(){
   // The forecast's two extra calls are allowed to fail on their own. They came
   // later than the rest of the page and an older backend answers 404 to both;
   // losing the ledger over a missing forecast would be a poor trade.
-  const [m, r, c, x, f, inv] = await Promise.all([
+  const [m, r, c, x, f, inv, nm] = await Promise.all([
     api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
-    api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({}))]);
+    api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({})),
+    // Not allowed to fail quietly like the two above it. An empty payee table
+    // does not just leave descriptions untidy — it also stops a subscription
+    // being typed as one, which changes what the rules deduct. Better the page
+    // stays locked than parses a month wrong and looks like it worked.
+    api("/config/names")]);
   S.invoices = (inv && inv.invoices) || [];
+  const names = (nm && nm.names) || {};
+  ACH = Array.isArray(names.ach) ? names.ach : [];
+  SUBS_DESC = Array.isArray(names.subs) ? names.subs : [];
   S.fc = {...FC_DEFAULT, ...((f && f.forecast) || {})};
   S.months = (m.months || []).map(x => ({id:x.key, key:x.key, label:x.label, rows:x.rows || []}));
   if (r && r.rules) S.rules = {...DEFAULT_RULES, ...r.rules};
@@ -1167,8 +1165,8 @@ function merchantKey(desc){
     .replace(/[#*].*$/, " ")
     .replace(/\b(la|tx|ca|ms|ar|mn|wa|or|ks|fl|ne|nv|hi|il|wi)\b\s*$/, " ")
     .replace(/\s+/g, " ").trim();
-  // The spreadsheet months named these differently from the parser — "Alliant CU"
-  // against "Alliant CU – Dep-Pymt" — so a trailing descriptor comes off.
+  // The spreadsheet months named a payee differently from the parser, the same
+  // name with a trailing "– Dep-Pymt" style descriptor, so that descriptor comes off.
   const dash = d.search(/\s[\u2013-]\s/);
   if (dash >= 6) d = d.slice(0, dash).trim();
   for (const t of TOWNS_R){
