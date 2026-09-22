@@ -511,7 +511,7 @@ const FC_DEFAULT = {
   dates: {},         // invoice id -> the day he actually expects it
   entries: []        // anything neither list knows about
 };
-const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, cheques:{}, qb:[], books:"mine", dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
+const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, cheques:{}, qb:[], books:"mine", merch:[], chart:[], cpaView:"accounts", cpaOnly:"todo", dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
            locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}};
 const $ = s => document.querySelector(s);
 
@@ -548,7 +548,7 @@ async function loadAll(){
   // The forecast's two extra calls are allowed to fail on their own. They came
   // later than the rest of the page and an older backend answers 404 to both;
   // losing the ledger over a missing forecast would be a poor trade.
-  const [m, r, c, x, f, inv, nm, ck, py] = await Promise.all([
+  const [m, r, c, x, f, inv, nm, ck, py, mr, qc] = await Promise.all([
     api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
     api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({})),
     // Not allowed to fail quietly like the two above it. An empty payee table
@@ -558,7 +558,8 @@ async function loadAll(){
     api("/config/names"),
     // Both are additive and an older backend answers 404, so neither may take
     // the page down. Missing them only costs the "Hers" column.
-    api("/config/cheques").catch(() => ({})), api("/config/payees").catch(() => ({}))]);
+    api("/config/cheques").catch(() => ({})), api("/config/payees").catch(() => ({})),
+    api("/config/merchants").catch(() => ({})), api("/config/qbchart").catch(() => ({}))]);
   S.invoices = (inv && inv.invoices) || [];
   const names = (nm && nm.names) || {};
   ACH = Array.isArray(names.ach) ? names.ach : [];
@@ -570,6 +571,8 @@ async function loadAll(){
   S.cheques = (ck && (ck.cheques || ck.value)) || {};
   const pay = (py && (py.payees || py.value)) || {};
   S.qb = Array.isArray(pay.rules) ? pay.rules.slice().sort((a,b) => b.key.length - a.key.length) : [];
+  S.merch = (((mr && (mr.merchants || mr.value)) || {}).list) || [];
+  S.chart = (((qc && (qc.qbchart || qc.value)) || {}).accounts) || [];
   S.dismissed = ((x && x.recurring) || {}).dismissed || [];
   S.added = ((x && x.recurring) || {}).added || [];
   if (!S.cur || !S.months.some(x => x.id === S.cur)) S.cur = S.months[0]?.id || null;
@@ -733,7 +736,7 @@ function render(){
   }
   if (S.view === "books") return renderBooks(m);
   if (S.view === "recurring") return renderRecurring();
-  if (S.view === "cpa") return renderCPA();
+  if (S.view === "cpa") return S.cpaView === "rules" ? renderCPARules() : renderCPA();
   const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label}))) : m.rows;
   const t = totals(S.all ? rows : m.rows, S.rules);
 
@@ -999,6 +1002,13 @@ const QB_ALIAS = [[/\bIRS\b|USATAXPYMT/i, "6215 Payroll Taxes"],
 // counting it is how you end up "missing" half her expenses.
 const QB_BS = /Online Transfer|Transfer to|Transfer from|CITI CARD|ALLY PAYMENT|ALLIANT|SANTANDER|TD AUTO|CHASE CREDIT|ATM WITHDRAWAL|^WITHDRAWAL|MONTHLY SERVICE FEE|SBA LOAN/i;
 
+// Same shaping the merchant list was built with, so a ruling actually matches.
+function qbMerchKey(d){
+  let x = String(d || "").replace(/\s*[\u2013-]\s*Card\s*\d+.*$/i, "").replace(/\s*[\u2013-]\s*ACH.*$/i, "").trim();
+  x = x.replace(/\s+\d{3}[- ]?\d{3}[- ]?\d{4}.*$/, "").replace(/\s+\d{5,}.*$/, "");
+  x = x.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  return x.toUpperCase().replace(/[^A-Z0-9 &']/g, " ").replace(/\s+/g, " ").trim();
+}
 function codeRowQB(row){
   if (row.qb) return row.qb;                       // a hand code always wins
   const d = String(row.c || ""), amt = Number(row.a) || 0;
@@ -1012,6 +1022,8 @@ function codeRowQB(row){
     const hit = S.cheques[n] || S.cheques["1" + n];
     return (hit && hit.acct) ? hit.acct : "_ck";
   }
+  // His own ruling on a merchant beats every learned rule.
+  for (const mm2 of S.merch) if (mm2.acct && qbMerchKey(d) === mm2.key) return mm2.acct;
   for (const a of QB_ALIAS) if (a[0].test(d)) return a[1];
   const k = qbKey(d);
   if (k){
@@ -1079,6 +1091,84 @@ function qbTotals(rows){
   }
   return by;
 }
+
+async function saveMerchants(){
+  const before = JSON.parse(JSON.stringify(S.merch));
+  try {
+    await api("/config/merchants", {method:"PUT",
+      body:{merchants:{built:"2026-09-22", from:"2026 bank months, no OCR anywhere", list:S.merch}}});
+  } catch(e){
+    S.merch = before; render();
+    if (e.message !== "Locked") alert("That didn't save. " + e.message);
+  }
+}
+
+/* One decision per merchant, and it holds forever. Sorted by spend, because
+   31 of these are 80% of the money and the long tail is worth $12k in total:
+   he should never be made to scroll 306 rows to finish the job. */
+function renderCPARules(){
+  const main = $("#main");
+  const list = S.merch.slice().sort((a,b) => b.sum - a.sum);
+  const todo = list.filter(m => !m.acct);
+  const shown = S.cpaOnly === "todo" ? todo : list;
+  const spend = list.reduce((n,m) => n + m.sum, 0);
+  const done  = list.filter(m => m.acct).reduce((n,m) => n + m.sum, 0);
+  const opts = S.chart.map(a =>
+    `<option value="${esc(a.code + " " + a.label)}">${esc(a.code)} &middot; ${esc(a.label)}</option>`).join("");
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed"><div class="k">Spend with a rule</div>
+        <div class="v num">${spend ? (done/spend*100).toFixed(1) : "0"}%</div>
+        <div class="sub">${money(-done)} of ${money(-spend)}</div></div>
+      <div class="cell"><div class="k">Merchants</div><div class="v num">${list.length}</div></div>
+      <div class="cell"><div class="k">Still to rule</div>
+        <div class="v num" style="color:${todo.length ? "var(--park)" : "var(--accent)"}">${todo.length}</div>
+        <div class="sub">${money(-todo.reduce((n,m)=>n+m.sum,0))}</div></div>
+      <div class="cell"><div class="k">Accounts</div><div class="v num">${S.chart.length}</div>
+        <div class="sub">her chart</div></div>
+    </section>
+    <div class="bar">
+      <span class="count" style="margin:0">Set an account once and every future charge from that merchant follows it. Suggestions are already filled in, change any that are wrong.</span>
+      <button class="chip" id="cpaBack">&larr; Accounts</button>
+      <button class="chip" id="cpaFilter" aria-pressed="${S.cpaOnly === "todo"}">${
+        S.cpaOnly === "todo" ? `Just the ${todo.length} left` : `All ${list.length}`}</button>
+    </div>
+    ${S.chart.length ? "" : '<p class="note">Her chart of accounts has not loaded, so there is nothing to choose from. The backend may not be updated yet.</p>'}
+    <div class="scroll"><table>
+      <thead><tr><th>Merchant</th><th class="r-amt">Times</th><th class="r-amt">Total</th><th>Account</th></tr></thead>
+      <tbody>
+        ${shown.length ? shown.map(m => `<tr>
+          <td class="r-desc">${esc(m.key)}${m.acct ? "" : ' <span class="tag off">new</span>'}</td>
+          <td class="r-amt num">${m.n}</td>
+          <td class="r-amt num neg">${money(-m.sum)}</td>
+          <td><select data-mk="${esc(m.key)}" style="width:100%;max-width:290px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px">
+            <option value="">&mdash; leave for later &mdash;</option>
+            ${opts}
+          </select></td>
+        </tr>`).join("") : '<tr><td colspan="4" style="padding:18px;color:var(--ink-3)">Nothing left to rule on.</td></tr>'}
+      </tbody>
+    </table></div>`;
+
+  // Set each select's current value without putting it in the HTML, so a
+  // merchant name never has to be escaped into an attribute twice.
+  main.querySelectorAll("select[data-mk]").forEach(sel => {
+    const m = list.find(x => x.key === sel.dataset.mk);
+    sel.value = (m && m.acct) || "";
+    sel.addEventListener("change", async () => {
+      const row = S.merch.find(x => x.key === sel.dataset.mk);
+      if (!row) return;
+      row.acct = sel.value;
+      row.src  = sel.value ? "andrew" : "";
+      await saveMerchants();
+      render();
+    });
+  });
+  $("#cpaBack").addEventListener("click", () => { S.cpaView = "accounts"; render(); });
+  $("#cpaFilter").addEventListener("click", () => {
+    S.cpaOnly = S.cpaOnly === "todo" ? "all" : "todo"; render(); });
+}
+
 function renderCPA(){
   const main = $("#main");
   const m = S.months.find(x => x.id === S.cur);
@@ -1112,6 +1202,8 @@ function renderCPA(){
     </section>
     <div class="bar">
       <span class="count" style="margin:0">The same rows coded the way the bookkeeper codes them, so the two can be compared. Nothing here changes the tithe or the Books tab.</span>
+      <button class="chip" id="cpaRules">Merchant rules${
+        S.merch.filter(m => !m.acct).length ? ` &middot; ${S.merch.filter(m => !m.acct).length} to set` : ""}</button>
       <button class="chip" id="cpaAll" aria-pressed="${S.all}">All months</button>
       <button class="chip" id="cpaCsv">Copy for a spreadsheet</button>
     </div>
@@ -1137,6 +1229,7 @@ function renderCPA(){
     </table></div>
     <div id="qdrill"></div>`;
 
+  $("#cpaRules").addEventListener("click", () => { S.cpaView = "rules"; render(); });
   $("#cpaAll").addEventListener("click", () => { S.all = !S.all; render(); });
   $("#cpaCsv").addEventListener("click", () => {
     const out = [["Account","Amount","Rows"].join("\t")];
