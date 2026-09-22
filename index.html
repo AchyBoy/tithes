@@ -290,9 +290,25 @@ textarea:focus{outline:none; border-color:var(--accent)}
 .lag input{width:46px; text-align:center; padding:7px 4px; border:1px solid var(--line);
   border-radius:8px; background:var(--surface); color:var(--ink); font:inherit; font-weight:600}
 table.fctab{min-width:0}
+.m-extra{display:none}
 table.fctab .r-desc{min-width:0}
 table.fctab td:first-child,table.fctab th:first-child{white-space:nowrap}
 @media (max-width:430px){table.fctab td,table.fctab th{padding-left:8px; padding-right:8px; font-size:12.5px}}
+/* A four column table with a dropdown in it does not fit a phone, and this is
+   a screen he will only ever use on one. Under 560px every row becomes a
+   block: the name, then the count and total, then a full width picker. */
+@media (max-width:560px){
+  table.mrules, table.mrules tbody, table.mrules tr, table.mrules td{display:block; width:100%}
+  table.mrules thead{display:none}
+  table.mrules tr{border:1px solid var(--line); border-radius:12px; padding:11px 13px; margin:0 0 10px}
+  table.mrules td{border:0; padding:0}
+  table.mrules td:first-child{font-weight:600; font-size:14.5px; line-height:1.3; white-space:normal}
+  table.mrules td.m-meta{color:var(--ink-3); font-size:12.5px; margin:3px 0 9px; text-align:left}
+  table.mrules td.m-pick select{max-width:none!important; width:100%!important; padding:10px 11px!important; font-size:15px!important}
+  table.mrules td.r-amt{text-align:left}
+  table.mrules td.m-hide{display:none}
+  .m-extra{display:inline}
+}
 tr.day td{background:var(--sunk); font-weight:600; font-size:12.5px}
 tr.low td{background:var(--park-soft)}
 tr.under td{background:var(--park-soft); color:var(--warn)}
@@ -321,6 +337,7 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
         <button class="btn" id="btnLock">Lock</button>
         <button class="btn" id="btnPw">Password</button>
         <button class="btn" id="btnRules">Rules</button>
+        <button class="btn" id="btnShare">Share</button>
         <button class="btn primary" id="btnPaste">Paste a month</button>
       </div>
     </div>
@@ -1092,6 +1109,19 @@ function qbTotals(rows){
   return by;
 }
 
+/* Installed to his home screen it runs without an address bar, so there is no
+   way to get the link out of it. Web Share gives the real iOS sheet; the
+   clipboard is the fallback for anything that does not have it. */
+async function shareSite(){
+  const url = location.origin + location.pathname;
+  if (navigator.share){
+    try { await navigator.share({title:"Tithe Ledger", url}); return; }
+    catch(e){ if (e && e.name === "AbortError") return; }
+  }
+  try { await navigator.clipboard.writeText(url); toast("Link copied"); }
+  catch(e){ prompt("Copy this link", url); }
+}
+
 async function saveMerchants(){
   const before = JSON.parse(JSON.stringify(S.merch));
   try {
@@ -1135,14 +1165,14 @@ function renderCPARules(){
         S.cpaOnly === "todo" ? `Just the ${todo.length} left` : `All ${list.length}`}</button>
     </div>
     ${S.chart.length ? "" : '<p class="note">Her chart of accounts has not loaded, so there is nothing to choose from. The backend may not be updated yet.</p>'}
-    <div class="scroll"><table>
+    <div class="scroll"><table class="fctab mrules">
       <thead><tr><th>Merchant</th><th class="r-amt">Times</th><th class="r-amt">Total</th><th>Account</th></tr></thead>
       <tbody>
         ${shown.length ? shown.map(m => `<tr>
           <td class="r-desc">${esc(m.key)}${m.acct ? "" : ' <span class="tag off">new</span>'}</td>
-          <td class="r-amt num">${m.n}</td>
-          <td class="r-amt num neg">${money(-m.sum)}</td>
-          <td><select data-mk="${esc(m.key)}" style="width:100%;max-width:290px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px">
+          <td class="r-amt num m-meta">${m.n}<span class="m-extra">&times; &middot; ${money(-m.sum)}</span></td>
+          <td class="r-amt num m-hide">${money(-m.sum)}</td>
+          <td class="m-pick"><select data-mk="${esc(m.key)}" style="width:100%;max-width:290px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px">
             <option value="">&mdash; leave for later &mdash;</option>
             ${opts}
           </select></td>
@@ -1208,7 +1238,7 @@ function renderCPA(){
       <button class="chip" id="cpaCsv">Copy for a spreadsheet</button>
     </div>
     ${ruleN ? "" : '<p class="note">No rules loaded. Either the backend has not been updated yet, or nothing has been learned from her books.</p>'}
-    <div class="scroll"><table>
+    <div class="scroll"><table class="fctab">
       <thead><tr><th>Account</th><th class="r-amt">Amount</th><th class="r-amt">Rows</th><th class="r-amt">Share</th></tr></thead>
       <tbody>
         ${order.map(g => {
@@ -2138,6 +2168,7 @@ $("#btnPaste").addEventListener("click", () => {
 });
 
 $("#btnRules").addEventListener("click", () => {
+  $("#btnShare").addEventListener("click", shareSite);
   const s = panel("Rules", Object.keys(RULE_META).map(k => `
     <div class="rule">
       <h3>${RULE_META[k].name}</h3>
