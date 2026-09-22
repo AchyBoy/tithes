@@ -294,6 +294,19 @@ textarea:focus{outline:none; border-color:var(--accent)}
   border-radius:8px; background:var(--surface); color:var(--ink); font:inherit; font-weight:600}
 table.fctab{min-width:0}
 .m-extra{display:none}
+/* The cell is .num, which is monospaced and does not wrap, so the account name
+   ran off the side of the phone. The suggestion opts back out of both. */
+.m-sug{color:var(--ink-3); font-family:var(--sans,"Public Sans",system-ui,sans-serif); white-space:normal}
+.m-sugname{white-space:normal}
+button.m-ok{font:inherit; font-size:12.5px; font-weight:600; cursor:pointer;
+  background:var(--accent-soft); color:var(--accent); border:1px solid transparent;
+  border-radius:999px; padding:3px 10px; margin:0 2px}
+button.m-ok:hover{border-color:var(--accent)}
+@media (max-width:560px){
+  table.mrules td.m-meta .m-sug{display:block; margin-top:8px; font-size:13.5px; line-height:1.5}
+  table.mrules .m-sep{display:none}
+  button.m-ok{font-size:14px; padding:7px 14px; margin:0 8px 2px 0}
+}
 table.fctab .r-desc{min-width:0}
 table.fctab td:first-child,table.fctab th:first-child{white-space:nowrap}
 @media (max-width:430px){table.fctab td,table.fctab th{padding-left:8px; padding-right:8px; font-size:12.5px}}
@@ -1179,8 +1192,16 @@ function renderCPARules(){
   const shown = S.cpaOnly === "todo" ? todo : list;
   const spend = list.reduce((n,m) => n + m.sum, 0);
   const done  = list.filter(m => m.acct).reduce((n,m) => n + m.sum, 0);
-  const opts = S.chart.map(a =>
-    `<option value="${esc(a.code + " " + a.label)}">${esc(a.code)} &middot; ${esc(a.label)}</option>`).join("");
+  const opt = a => `<option value="${esc(a.code + " " + a.label)}">${esc(a.code)} &middot; ${esc(a.label)}</option>`;
+  const allOpts = S.chart.map(opt).join("");
+  // A suggestion sits at the top of its own group so he is not hunting through
+  // 35 accounts on a phone. It is never pre-selected: a guess of mine must not
+  // look like a decision of his, and the "still to rule" count has to stay true.
+  const optsFor = m => {
+    const hit = m.sug && S.chart.find(a => (a.code + " " + a.label) === m.sug);
+    return (hit ? `<optgroup label="My guess">${opt(hit)}</optgroup><optgroup label="Everything else">${allOpts}</optgroup>`
+                : allOpts);
+  };
 
   main.innerHTML = `
     <section class="summary">
@@ -1206,11 +1227,12 @@ function renderCPARules(){
       <tbody>
         ${shown.length ? shown.map(m => `<tr>
           <td class="r-desc">${esc(m.key)}${m.acct ? "" : ' <span class="tag off">new</span>'}</td>
-          <td class="r-amt num m-meta">${m.n}<span class="m-extra">&times; &middot; ${money(-m.sum)}</span></td>
+          <td class="r-amt num m-meta">${m.n}<span class="m-extra">&times; &middot; ${money(-m.sum)}</span>${
+            m.sug ? `<span class="m-sug"><span class="m-sep"> &middot; </span><button class="m-ok" data-ok="${esc(m.key)}">Use ${esc(m.sug.split(" ")[0])}</button><span class="m-sugname">${esc(m.sug.replace(/^\d+ /,""))}</span></span>` : ""}</td>
           <td class="r-amt num m-hide">${money(-m.sum)}</td>
           <td class="m-pick"><select data-mk="${esc(m.key)}" style="width:100%;max-width:290px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px">
             <option value="">&mdash; leave for later &mdash;</option>
-            ${opts}
+            ${optsFor(m)}
           </select></td>
         </tr>`).join("") : '<tr><td colspan="4" style="padding:18px;color:var(--ink-3)">Nothing left to rule on.</td></tr>'}
       </tbody>
@@ -1230,6 +1252,13 @@ function renderCPARules(){
       render();
     });
   });
+  main.querySelectorAll("[data-ok]").forEach(b => b.addEventListener("click", async () => {
+    const row = S.merch.find(x => x.key === b.dataset.ok);
+    if (!row || !row.sug) return;
+    row.acct = row.sug; row.src = "andrew"; delete row.sug;
+    await saveMerchants();
+    render();
+  }));
   $("#cpaBack").addEventListener("click", () => { S.cpaView = "accounts"; render(); });
   $("#cpaFilter").addEventListener("click", () => {
     S.cpaOnly = S.cpaOnly === "todo" ? "all" : "todo"; render(); });
