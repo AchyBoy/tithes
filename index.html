@@ -510,7 +510,7 @@ const FC_DEFAULT = {
   dates: {},         // invoice id -> the day he actually expects it
   entries: []        // anything neither list knows about
 };
-const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
+const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, cheques:{}, qb:[], books:"mine", dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
            locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}};
 const $ = s => document.querySelector(s);
 
@@ -547,14 +547,17 @@ async function loadAll(){
   // The forecast's two extra calls are allowed to fail on their own. They came
   // later than the rest of the page and an older backend answers 404 to both;
   // losing the ledger over a missing forecast would be a poor trade.
-  const [m, r, c, x, f, inv, nm] = await Promise.all([
+  const [m, r, c, x, f, inv, nm, ck, py] = await Promise.all([
     api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
     api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({})),
     // Not allowed to fail quietly like the two above it. An empty payee table
     // does not just leave descriptions untidy — it also stops a subscription
     // being typed as one, which changes what the rules deduct. Better the page
     // stays locked than parses a month wrong and looks like it worked.
-    api("/config/names")]);
+    api("/config/names"),
+    // Both are additive and an older backend answers 404, so neither may take
+    // the page down. Missing them only costs the "Hers" column.
+    api("/config/cheques").catch(() => ({})), api("/config/payees").catch(() => ({}))]);
   S.invoices = (inv && inv.invoices) || [];
   const names = (nm && nm.names) || {};
   ACH = Array.isArray(names.ach) ? names.ach : [];
@@ -563,6 +566,9 @@ async function loadAll(){
   S.months = (m.months || []).map(x => ({id:x.key, key:x.key, label:x.label, rows:x.rows || []}));
   if (r && r.rules) S.rules = {...DEFAULT_RULES, ...r.rules};
   S.cats = (c && c.categories) || {};
+  S.cheques = (ck && (ck.cheques || ck.value)) || {};
+  const pay = (py && (py.payees || py.value)) || {};
+  S.qb = Array.isArray(pay.rules) ? pay.rules.slice().sort((a,b) => b.key.length - a.key.length) : [];
   S.dismissed = ((x && x.recurring) || {}).dismissed || [];
   S.added = ((x && x.recurring) || {}).added || [];
   if (!S.cur || !S.months.some(x => x.id === S.cur)) S.cur = S.months[0]?.id || null;
@@ -953,7 +959,9 @@ function includePanel(monthId, i, row){
 
 /* ============ books: the same rows, coded the way a bookkeeper would ============ */
 
-const GROUP_ORDER = ["Income","Job costs","Operating","Taxes","Debt","Owner & personal","Needs a decision"];
+const GROUP_ORDER = ["Income","Cost of Goods Sold","Expense","Other Expense",
+                     "Job costs","Operating","Taxes","Debt","Owner & personal",
+                     "Needs a decision","Not on a P&L"];
 
 /**
  * Which account a row belongs to. A hand-set code on the row wins; after that
@@ -961,6 +969,68 @@ const GROUP_ORDER = ["Income","Job costs","Operating","Taxes","Debt","Owner & pe
  * never names its payee on a bank statement, so cheques land in their own
  * bucket to be coded by hand rather than guessed at.
  */
+/* ── Her chart of accounts ────────────────────────────────────────────────
+   Books has always coded into HIS 20 categories, an owner's view of his own
+   business. That is the right shape for reading it and the wrong shape for
+   checking the bookkeeper: if she calls something material and this calls it
+   labour, the two sets of numbers can never be lined up. So "Hers" is a
+   second, parallel coding of the same rows into her QuickBooks accounts,
+   built only from what she actually did. His own view is left alone.
+   Rules and the cheque register both live server-side in tithe_config — the
+   payee names are his crew and his creditors and must never ship in here. */
+
+// The merchant is at the FRONT of a bank line and the town at the end, so the
+// town goes first: it is the part that changes between two visits to the same
+// merchant, and left in it matches every other line in the parish.
+const QB_TOWNS = /\b(LAFAYETTE|BATON ROUGE|BROUSSARD|SCOTT|CARENCRO|MAURICE|YOUNGSVILLE|DUSON|NEW IBERIA|OPELOUSAS|EUNICE|CROWLEY|RAYNE|ABBEVILLE|HOUMA|METAIRIE|NEW ORLEANS|GONZALES|PORT ALLEN|VILLE PLATTE|JENNINGS|ST MARTINVILL|SAINT MARTINV|BREAUX BRIDGE|DERIDDER|LA|TX|CA|MS|AL|TN|FL|NE|WA|MO|AR|UT|GA|NY|MD|PA|SG)\b/gi;
+function qbKey(d){
+  let x = String(d || "").toUpperCase();
+  x = x.replace(/\s*[\u2013-]\s*CARD\s*\d+.*$/, "").replace(/\bTRANSACTION#.*$/, "");
+  x = x.replace(/^\s*(PY|SQ|TST|TIL|UEP|CKE|SP|DD|NNT|VSP|CTLP|BM|PAR|NYX|CK|PHR)\s*\*/, "");
+  x = x.replace(/\s+\d{2}\/\d{2}\s*$/, "").replace(/\s+\d{4,}\s*$/, "");
+  x = x.replace(/\b\d[\d-]{5,}\b/g, " ").replace(QB_TOWNS, " ");
+  x = x.replace(/[^A-Z0-9]/g, " ").replace(/\s+/g, " ").trim();
+  return x.split(" ").filter(w => w.length > 1).slice(0, 3).join(" ");
+}
+// She labels these differently from the bank, so no text can bridge them.
+const QB_ALIAS = [[/\bIRS\b|USATAXPYMT/i, "6215 Payroll Taxes"],
+                  [/LOUISIANA REVEN|STATE OF LOUISIA/i, "6215 Payroll Taxes"]];
+// Money that moved rather than got spent. None of it belongs on a P&L, and
+// counting it is how you end up "missing" half her expenses.
+const QB_BS = /Online Transfer|Transfer to|Transfer from|CITI CARD|ALLY PAYMENT|ALLIANT|SANTANDER|TD AUTO|CHASE CREDIT|ATM WITHDRAWAL|^WITHDRAWAL|MONTHLY SERVICE FEE|SBA LOAN/i;
+
+function codeRowQB(row){
+  if (row.qb) return row.qb;                       // a hand code always wins
+  const d = String(row.c || ""), amt = Number(row.a) || 0;
+  if (QB_BS.test(d)) return "_bs";
+  if (row.t === "Deposit" || row.t === "Refund") return "4000 Job Income";
+  const m = d.match(/\bCHECK\s*#?\s*(\d+)/i);
+  if (m && !/Transfer/i.test(d)){
+    const n = String(parseInt(m[1], 10));
+    // Chase truncates a cheque number to four digits, so 11714 prints as 1714.
+    // Checked over 179 cheques: no number matches both forms, so this is safe.
+    const hit = S.cheques[n] || S.cheques["1" + n];
+    return (hit && hit.acct) ? hit.acct : "_ck";
+  }
+  for (const a of QB_ALIAS) if (a[0].test(d)) return a[1];
+  const k = qbKey(d);
+  if (k){
+    const exact = S.qb.find(r => r.key === k);
+    if (exact) return exact.acct;
+    const near = S.qb.find(r => k.indexOf(r.key) === 0 || r.key.indexOf(k) === 0);
+    if (near) return near.acct;
+  }
+  return "_qnone";
+}
+function qbLabel(id){
+  if (id === "_ck")    return {group:"Needs a decision", label:"Cheque — number not in the register"};
+  if (id === "_qnone") return {group:"Needs a decision", label:"No rule for this merchant yet"};
+  if (id === "_bs")    return {group:"Not on a P&L", label:"Transfers, card payments, loan principal"};
+  const n = parseInt(id, 10) || 9999;
+  return {group: n < 5000 ? "Income" : n < 6000 ? "Cost of Goods Sold"
+                : n < 8000 ? "Expense" : "Other Expense", label: id};
+}
+
 function codeRow(row, cats){
   if (row.g && (cats[row.g] || row.g === "_check" || row.g === "_none")) return row.g;
   const d = (row.c || "").toLowerCase(), amt = Number(row.a) || 0;
@@ -978,6 +1048,7 @@ function codeRow(row, cats){
 }
 
 function catLabel(id){
+  if (S.books === "hers") return qbLabel(id);
   if (id === "_check")  return {group:"Needs a decision", label:"Cheques — payee is not on the statement"};
   if (id === "_none")   return {group:"Needs a decision", label:"Not coded yet"};
   if (id === "_income") return {group:"Income", label:"Money in, uncategorised"};
@@ -987,7 +1058,7 @@ function catLabel(id){
 function booksTotals(rows){
   const by = {};
   for (const r of rows){
-    const id = codeRow(r, S.cats);
+    const id = S.books === "hers" ? codeRowQB(r) : codeRow(r, S.cats);
     (by[id] = by[id] || {n:0, sum:0, rows:[]});
     by[id].n++; by[id].sum += Number(r.a) || 0; by[id].rows.push(r);
   }
@@ -1029,6 +1100,8 @@ function renderBooks(m){
     <div class="bar">
       <span class="count" style="margin:0">A bookkeeper's view of the same rows. Coding here does not change the tithe.</span>
       <button class="chip" id="allMonthsB" aria-pressed="${S.all}">All months</button>
+      <button class="chip" id="booksWho" aria-pressed="${S.books === "hers"}">${
+        S.books === "hers" ? "Her accounts" : "My accounts"}</button>
       <button class="chip" id="csv">Copy for a spreadsheet</button>
     </div>
 
@@ -1054,6 +1127,8 @@ function renderBooks(m){
     <div id="drill"></div>`;
 
   $("#allMonthsB").addEventListener("click", () => { S.all = !S.all; render(); });
+  $("#booksWho").addEventListener("click", () => {
+    S.books = S.books === "hers" ? "mine" : "hers"; render(); });
   $("#csv").addEventListener("click", () => copyBooks(by, order, groups));
   main.querySelectorAll(".acct").forEach(tr =>
     tr.addEventListener("click", () => drillInto(tr.dataset.cat, by[tr.dataset.cat])));
