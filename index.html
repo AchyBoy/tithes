@@ -315,7 +315,8 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
           <button class="btn" data-view="ledger">Ledger</button
           ><button class="btn" data-view="books">Books</button
           ><button class="btn" data-view="recurring">Recurring</button
-          ><button class="btn" data-view="forecast">Forecast</button>
+          ><button class="btn" data-view="forecast">Forecast</button
+          ><button class="btn" data-view="cpa">Bookkeeper</button>
         </span>
         <button class="btn" id="btnLock">Lock</button>
         <button class="btn" id="btnPw">Password</button>
@@ -732,6 +733,7 @@ function render(){
   }
   if (S.view === "books") return renderBooks(m);
   if (S.view === "recurring") return renderRecurring();
+  if (S.view === "cpa") return renderCPA();
   const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label}))) : m.rows;
   const t = totals(S.all ? rows : m.rows, S.rules);
 
@@ -959,9 +961,7 @@ function includePanel(monthId, i, row){
 
 /* ============ books: the same rows, coded the way a bookkeeper would ============ */
 
-const GROUP_ORDER = ["Income","Cost of Goods Sold","Expense","Other Expense",
-                     "Job costs","Operating","Taxes","Debt","Owner & personal",
-                     "Needs a decision","Not on a P&L"];
+const GROUP_ORDER = ["Income","Job costs","Operating","Taxes","Debt","Owner & personal","Needs a decision"];
 
 /**
  * Which account a row belongs to. A hand-set code on the row wins; after that
@@ -1048,7 +1048,6 @@ function codeRow(row, cats){
 }
 
 function catLabel(id){
-  if (S.books === "hers") return qbLabel(id);
   if (id === "_check")  return {group:"Needs a decision", label:"Cheques — payee is not on the statement"};
   if (id === "_none")   return {group:"Needs a decision", label:"Not coded yet"};
   if (id === "_income") return {group:"Income", label:"Money in, uncategorised"};
@@ -1058,11 +1057,106 @@ function catLabel(id){
 function booksTotals(rows){
   const by = {};
   for (const r of rows){
-    const id = S.books === "hers" ? codeRowQB(r) : codeRow(r, S.cats);
+    const id = codeRow(r, S.cats);
     (by[id] = by[id] || {n:0, sum:0, rows:[]});
     by[id].n++; by[id].sum += Number(r.a) || 0; by[id].rows.push(r);
   }
   return by;
+}
+
+
+/* The Bookkeeper tab. Deliberately shares no code path with Books: Books is
+   his own view of his own business and must keep behaving exactly as it did.
+   This one exists for one job, lining these rows up against what the
+   bookkeeper actually filed, so it codes into HER chart and nothing else. */
+const QB_ORDER = ["Income","Cost of Goods Sold","Expense","Other Expense","Needs a decision","Not on a P&L"];
+function qbTotals(rows){
+  const by = {};
+  for (const r of rows){
+    const id = codeRowQB(r);
+    (by[id] = by[id] || {n:0, sum:0, rows:[]});
+    by[id].n++; by[id].sum += Number(r.a) || 0; by[id].rows.push(r);
+  }
+  return by;
+}
+function renderCPA(){
+  const main = $("#main");
+  const m = S.months.find(x => x.id === S.cur);
+  if (!m && !S.all){ main.innerHTML = '<p class="note">No months loaded yet.</p>'; return; }
+  const rows = S.all ? S.months.flatMap(x => x.rows.map(r => ({...r, _m:x.label, _id:x.id})))
+                     : m.rows.map((r,i) => ({...r, _id:m.id, _i:i}));
+  const by = qbTotals(rows);
+  const groups = {};
+  for (const [id, v] of Object.entries(by)){
+    const meta = qbLabel(id);
+    (groups[meta.group] = groups[meta.group] || []).push({id, ...v, label: meta.label});
+  }
+  const order = [...QB_ORDER.filter(g => groups[g]), ...Object.keys(groups).filter(g => !QB_ORDER.includes(g))];
+  const spend = Object.entries(by).reduce((n,[id,v]) =>
+    n + (id !== "_bs" && !/^4/.test(id) && v.sum < 0 ? v.sum : 0), 0);
+  const todo = (by._ck?.n || 0) + (by._qnone?.n || 0);
+  const todoSum = (by._ck?.sum || 0) + (by._qnone?.sum || 0);
+  const known = Object.keys(S.cheques).length, ruleN = S.qb.length;
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed"><div class="k">Coded spend${S.all ? " &middot; all months" : ""}</div>
+        <div class="v num">${money(spend)}</div>
+        <div class="sub">into her chart of accounts</div></div>
+      <div class="cell"><div class="k">Rows</div><div class="v num">${rows.length}</div></div>
+      <div class="cell"><div class="k">Left to name</div>
+        <div class="v num" style="color:${todo ? "var(--park)" : "var(--accent)"}">${todo}</div>
+        <div class="sub">${money(todoSum)}</div></div>
+      <div class="cell"><div class="k">Knows</div><div class="v num">${ruleN}</div>
+        <div class="sub">merchants &middot; ${known} cheques</div></div>
+    </section>
+    <div class="bar">
+      <span class="count" style="margin:0">The same rows coded the way the bookkeeper codes them, so the two can be compared. Nothing here changes the tithe or the Books tab.</span>
+      <button class="chip" id="cpaAll" aria-pressed="${S.all}">All months</button>
+      <button class="chip" id="cpaCsv">Copy for a spreadsheet</button>
+    </div>
+    ${ruleN ? "" : '<p class="note">No rules loaded. Either the backend has not been updated yet, or nothing has been learned from her books.</p>'}
+    <div class="scroll"><table>
+      <thead><tr><th>Account</th><th class="r-amt">Amount</th><th class="r-amt">Rows</th><th class="r-amt">Share</th></tr></thead>
+      <tbody>
+        ${order.map(g => {
+          const items = groups[g].sort((a,b) => a.sum - b.sum);
+          const gsum = items.reduce((n,i) => n + i.sum, 0);
+          return `<tr class="grp"><td><b>${esc(g)}</b></td><td class="r-amt num"><b>${money(gsum)}</b></td>
+                  <td class="r-amt num">${items.reduce((n,i)=>n+i.n,0)}</td><td></td></tr>` +
+            items.map(i => `<tr class="acct" data-cat="${esc(i.id)}">
+              <td style="padding-left:26px">${esc(i.label)}${(i.id === "_ck" || i.id === "_qnone")
+                  ? ' <span class="tag off">name these</span>' : ""}</td>
+              <td class="r-amt num ${i.sum < 0 ? "neg" : "pos"}">${money(i.sum)}</td>
+              <td class="r-amt num">${i.n}</td>
+              <td class="r-amt num" style="color:var(--ink-3)">${
+                i.sum < 0 && spend ? (i.sum / spend * 100).toFixed(1) + "%" : "\u2014"}</td>
+            </tr>`).join("");
+        }).join("")}
+      </tbody>
+    </table></div>
+    <div id="qdrill"></div>`;
+
+  $("#cpaAll").addEventListener("click", () => { S.all = !S.all; render(); });
+  $("#cpaCsv").addEventListener("click", () => {
+    const out = [["Account","Amount","Rows"].join("\t")];
+    for (const g of order) for (const i of groups[g]) out.push([i.label, i.sum.toFixed(2), i.n].join("\t"));
+    navigator.clipboard.writeText(out.join("\n")).then(() => toast("Copied"), () => {});
+  });
+  main.querySelectorAll(".acct").forEach(tr => tr.addEventListener("click", () => {
+    const b = by[tr.dataset.cat]; if (!b) return;
+    $("#qdrill").innerHTML = `
+      <h3 style="font-family:Newsreader,Georgia,serif;font-weight:500;font-size:19px;margin:26px 0 10px">
+        ${esc(qbLabel(tr.dataset.cat).label)} <span style="color:var(--ink-3);font-size:14px">&middot; ${b.n} rows</span></h3>
+      <div class="scroll"><table><tbody>
+        ${b.rows.slice(0,200).map(r => `<tr>
+          <td class="r-date num">${esc(r.d)}${r._m ? `<br><small style="color:var(--ink-3)">${esc(r._m)}</small>` : ""}</td>
+          <td class="r-desc">${esc(r.c)}</td>
+          <td class="r-amt num ${r.a < 0 ? "neg" : "pos"}">${money(r.a)}</td></tr>`).join("")}
+      </tbody></table></div>
+      ${b.rows.length > 200 ? `<p class="note">Showing the first 200 of ${b.rows.length}.</p>` : ""}`;
+    $("#qdrill").scrollIntoView({behavior:"smooth", block:"start"});
+  }));
 }
 
 function renderBooks(m){
@@ -1100,8 +1194,6 @@ function renderBooks(m){
     <div class="bar">
       <span class="count" style="margin:0">A bookkeeper's view of the same rows. Coding here does not change the tithe.</span>
       <button class="chip" id="allMonthsB" aria-pressed="${S.all}">All months</button>
-      <button class="chip" id="booksWho" aria-pressed="${S.books === "hers"}">${
-        S.books === "hers" ? "Her accounts" : "My accounts"}</button>
       <button class="chip" id="csv">Copy for a spreadsheet</button>
     </div>
 
@@ -1127,8 +1219,6 @@ function renderBooks(m){
     <div id="drill"></div>`;
 
   $("#allMonthsB").addEventListener("click", () => { S.all = !S.all; render(); });
-  $("#booksWho").addEventListener("click", () => {
-    S.books = S.books === "hers" ? "mine" : "hers"; render(); });
   $("#csv").addEventListener("click", () => copyBooks(by, order, groups));
   main.querySelectorAll(".acct").forEach(tr =>
     tr.addEventListener("click", () => drillInto(tr.dataset.cat, by[tr.dataset.cat])));
