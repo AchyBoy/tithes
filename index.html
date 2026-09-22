@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="color-scheme" content="light dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Tithes">
@@ -1112,6 +1115,39 @@ function qbTotals(rows){
 /* Installed to his home screen it runs without an address bar, so there is no
    way to get the link out of it. Web Share gives the real iOS sheet; the
    clipboard is the fallback for anything that does not have it. */
+/* Installed to the home screen, iOS runs this standalone and holds onto the
+   HTML hard: he was looking at a build two pushes old and had no address bar
+   to refresh from. So the page checks itself.
+
+   It fingerprints the live file rather than comparing a version constant,
+   because a constant only works if somebody remembers to bump it and nobody
+   ever does. Any change to the file at all is a new fingerprint.
+
+   ⚠️ The reload is capped at once per session. If a stale cache kept serving
+   the old bytes, comparing "live" against "running" would reload forever. */
+function tlSig(t){
+  let h = 0;
+  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0;
+  return t.length + ":" + h;
+}
+async function checkForUpdate(){
+  try {
+    const res = await fetch(location.pathname + "?cb=" + Date.now(), {cache:"no-store"});
+    if (!res.ok) return;
+    const sig = tlSig(await res.text());
+    let seen = null;
+    try { seen = localStorage.getItem("tl_build"); } catch(e){}
+    if (seen === sig) return;
+    try { localStorage.setItem("tl_build", sig); } catch(e){}
+    if (!seen) return;                       // first run, nothing to compare to
+    let already = null;
+    try { already = sessionStorage.getItem("tl_reloaded"); } catch(e){}
+    if (already) return;                     // one reload per session, never a loop
+    try { sessionStorage.setItem("tl_reloaded", "1"); } catch(e){}
+    location.reload();
+  } catch(e){}
+}
+
 async function shareSite(){
   const url = location.origin + location.pathname;
   if (navigator.share){
@@ -2216,6 +2252,11 @@ $("#btnLock").addEventListener("click", () => {
 });
 
 boot();
+
+checkForUpdate();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkForUpdate();
+});
 </script>
 </body>
 </html>
