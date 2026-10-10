@@ -1175,12 +1175,18 @@ async function checkForUpdate(){
     let seen = null;
     try { seen = localStorage.getItem("tl_build"); } catch(e){}
     if (seen === sig) return;
-    try { localStorage.setItem("tl_build", sig); } catch(e){}
-    if (!seen) return;                       // first run, nothing to compare to
+    if (!seen){                              // first run, nothing to compare to
+      try { localStorage.setItem("tl_build", sig); } catch(e){}
+      return;
+    }
+    // One reload per BUILD, not per session. The cap used to be per session
+    // and the new build was written down before checking it, so a second push
+    // inside one session was recorded as seen and never loaded: he had the
+    // Tithes tab from the first push and no cheque badges from the second.
     let already = null;
     try { already = sessionStorage.getItem("tl_reloaded"); } catch(e){}
-    if (already) return;                     // one reload per session, never a loop
-    try { sessionStorage.setItem("tl_reloaded", "1"); } catch(e){}
+    if (already === sig) return;             // tried this build already, never a loop
+    try { sessionStorage.setItem("tl_reloaded", sig); localStorage.setItem("tl_build", sig); } catch(e){}
     location.reload();
   } catch(e){}
 }
