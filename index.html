@@ -811,7 +811,7 @@ function render(){
         <div class="k">Tithes owed${S.all ? " · all months" : ""}</div>
         <div class="v num">${money(t.owed)}</div>
         <div class="sub">10% of ${money(t.base)}</div>
-        <div class="sub" style="margin-top:10px">Still owed, all months: <b>${money(titheTotals().left)}</b> &middot; paid ${money(titheTotals().paid)}</div>
+        <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b> &middot; paid ${money(titheTotals().paid)}</div>
         ${S.payMsg ? `<div class="sub">${S.payMsg}</div>` : ""}
         <button class="btn primary" id="btnPay" style="margin-top:12px">Record a payment</button>
       </div>
@@ -2276,8 +2276,46 @@ const rowYmd = (key, d) => key.slice(0,4) + "-" + d.slice(0,2) + "-" + d.slice(3
 /** Every month added up: owed, paid, and what is left. */
 function titheTotals(){
   const owed = S.months.reduce((n,m) => n + totals(m.rows, S.rules).owed, 0);
-  const paid = S.pays.reduce((n,p) => n + (Number(p.amount) || 0), 0);
-  return {owed, paid, left: owed - paid};
+  // A payment can carry a gift: the part he gave on top, which he chose not to
+  // credit toward later months. Only the rest comes off what is owed.
+  let paid = 0, gift = 0;
+  for (const p of S.pays){
+    const a = Number(p.amount) || 0, g = Math.min(a, Number(p.gift) || 0);
+    paid += a - g; gift += g;
+  }
+  return {owed, paid, gift, left: owed - paid};
+}
+
+/** "Still owed $X" or, once he is past it, "Ahead by $X". */
+const leftLabel = left => left < -0.005 ? "Ahead by" : "Still owed";
+
+/**
+ * A payment bigger than what is still owed: ask what the extra is. Resolves to
+ * the gift amount (0 when it is credit), or null if he backs out.
+ */
+function askExtra(amount){
+  const left = titheTotals().left;
+  const extra = Math.round((amount - Math.max(left, 0)) * 100) / 100;
+  if (!(extra > 0.004)) return Promise.resolve(0);
+  return new Promise(resolve => {
+    const s = panel("You paid " + money(extra) + " extra", `
+      <p class="hint">${left > 0
+        ? `Still owed is ${money(left)} and this payment is ${money(amount)}.`
+        : `Nothing is owed right now, so all ${money(amount)} is on top.`}
+        What should the ${money(extra)} do?</p>
+      <div class="pfoot" style="flex-direction:column; align-items:stretch; gap:10px">
+        <button class="btn primary" data-x="credit">Credit it forward, it comes off next month</button>
+        <button class="btn" data-x="gift">It&rsquo;s a gift, don&rsquo;t take it off later</button>
+        <button class="btn" data-close>Cancel</button>
+      </div>`);
+    let done = false;
+    s.querySelectorAll("[data-x]").forEach(b => b.addEventListener("click", () => {
+      done = true; s.remove(); resolve(b.dataset.x === "gift" ? extra : 0);
+    }));
+    // Close, Cancel or a tap outside: nothing is recorded.
+    new MutationObserver((_, o) => { if (!document.body.contains(s)){ o.disconnect(); if (!done) resolve(null); } })
+      .observe(document.body, {childList:true});
+  });
 }
 
 /** Where a cheque number turns up in the saved statements, if anywhere. */
@@ -2376,11 +2414,13 @@ function wirePayForm(root, done){
     if (check && S.pays.some(p => String(p.check) === check)){
       if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
     }
+    const gift = await askExtra(amount);
+    if (gift === null) return;
     const btn = q("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
-    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed"}]);
+    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...(gift ? {gift} : {})}]);
     if (!ok){ btn.disabled = false; btn.textContent = "Record"; return; }
     const hit = findCheck(check);
-    done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}.` +
+    done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}${gift ? ", " + money(gift) + " of it a gift" : ""}.` +
       (hit ? ` Found it on ${esc(hit.m.label)} and left it out of that month.` : ""));
   });
 }
@@ -2403,12 +2443,12 @@ function renderTithes(){
   main.innerHTML = `
     <section class="summary">
       <div class="cell owed">
-        <div class="k">Tithes still owed</div>
-        <div class="v num">${money(T.left)}</div>
-        <div class="sub">${money(T.owed)} owed across ${S.months.length} months, less ${money(T.paid)} paid</div>
+        <div class="k">Tithes ${leftLabel(T.left).toLowerCase()}</div>
+        <div class="v num">${money(Math.abs(T.left))}</div>
+        <div class="sub">${money(T.owed)} owed across ${S.months.length} months, less ${money(T.paid)} paid${T.gift ? `, plus ${money(T.gift)} given as gifts` : ""}</div>
       </div>
       <div class="cell"><div class="k">Owed</div><div class="v num">${money(T.owed)}</div></div>
-      <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div></div>
+      <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div>${T.gift ? `<div class="sub">+ ${money(T.gift)} gifts</div>` : ""}</div>
     </section>
 
     ${payFormHtml(true)}
@@ -2433,7 +2473,7 @@ function renderTithes(){
         const hit = findCheck(p.check);
         return `<tr>
           <td>${prettyDay(p.date)}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
-          <td class="r-amt num">${money(Number(p.amount) || 0)}</td>
+          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}</td>
           <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
       }).join("")}</tbody></table></div>`
@@ -2444,8 +2484,10 @@ function renderTithes(){
   wirePayForm(main, msg => { S.payMsg = msg; render(); });
   main.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", async () => {
     const c = found[+b.dataset.rec];
+    const gift = await askExtra(c.amount);
+    if (gift === null) return;
     b.disabled = true;
-    await recordPays([{id:Date.now(), date:c.date, amount:c.amount, check:c.check, src:"statement"}]);
+    await recordPays([{id:Date.now(), date:c.date, amount:c.amount, check:c.check, src:"statement", ...(gift ? {gift} : {})}]);
     S.payMsg = ""; render();
   }));
   const ra = $("#recAll");
