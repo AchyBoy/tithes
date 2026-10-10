@@ -811,6 +811,9 @@ function render(){
         <div class="k">Tithes owed${S.all ? " · all months" : ""}</div>
         <div class="v num">${money(t.owed)}</div>
         <div class="sub">10% of ${money(t.base)}</div>
+        <div class="sub" style="margin-top:10px">Still owed, all months: <b>${money(titheTotals().left)}</b> &middot; paid ${money(titheTotals().paid)}</div>
+        ${S.payMsg ? `<div class="sub">${S.payMsg}</div>` : ""}
+        <button class="btn primary" id="btnPay" style="margin-top:12px">Record a payment</button>
       </div>
       <div class="cell"><div class="k">Income</div><div class="v num pos">${money(t.income)}</div></div>
       <div class="cell"><div class="k">Money out</div><div class="v num neg">${money(t.out)}</div></div>
@@ -839,6 +842,7 @@ function render(){
 
   $("#q").addEventListener("input", e => { S.q = e.target.value; renderRows(); });
   $("#allMonths").addEventListener("click", () => { S.all = !S.all; render(); });
+  $("#btnPay").addEventListener("click", payPanel);
   document.querySelectorAll("[data-filter]").forEach(b =>
     b.addEventListener("click", () => { S.filter = b.dataset.filter; render(); }));
   renderRows();
@@ -2341,11 +2345,55 @@ const prettyDay = ymdStr => {
   return y ? MONTHS[mo-1] + " " + d + ", " + y : "";
 };
 
+const todayYmdStr = () => {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+};
+
+/** The amount, check number and date form. One copy, used on the Tithes tab and from the Ledger card. */
+function payFormHtml(heading){
+  return `<form class="payform" id="payform" autocomplete="off">
+      ${heading ? "<h3>Record a tithe payment</h3>" : ""}
+      <div><label for="pamt">Amount</label><input id="pamt" inputmode="decimal" placeholder="$" required></div>
+      <div><label for="pchk">Check #</label><input id="pchk" inputmode="numeric" placeholder="#"></div>
+      <div><label for="pday">Date</label><input id="pday" type="date" value="${todayYmdStr()}"></div>
+      <button class="btn primary" type="submit">Record</button>
+    </form>`;
+}
+
+/** Saves what was typed into the form under `root`, then hands back a line saying what happened. */
+function wirePayForm(root, done){
+  const q = sel => root.querySelector(sel);
+  q("#payform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const amount = Math.round(parseFloat(q("#pamt").value.replace(/[$,]/g,"")) * 100) / 100;
+    const check = q("#pchk").value.replace(/\D/g,"");
+    const date = q("#pday").value || todayYmdStr();
+    if (!(amount > 0)){ alert("Put the amount in."); return; }
+    const jh = regFor(check);
+    if (jh && !confirm("Check #" + jh.num + " is a " + (KIND_LABEL[jh.kind] || "JobHub payment").toLowerCase() +
+        " in JobHub (" + (jh.payee || "") + ", " + money(jh.amount) + "). Record it as a tithe anyway?")) return;
+    if (check && S.pays.some(p => String(p.check) === check)){
+      if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
+    }
+    const btn = q("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
+    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed"}]);
+    if (!ok){ btn.disabled = false; btn.textContent = "Record"; return; }
+    const hit = findCheck(check);
+    done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}.` +
+      (hit ? ` Found it on ${esc(hit.m.label)} and left it out of that month.` : ""));
+  });
+}
+
+function payPanel(){
+  const s = panel("Record a tithe payment", payFormHtml(false));
+  wirePayForm(s, msg => { s.remove(); S.payMsg = msg; render(); });
+  setTimeout(() => { const a = s.querySelector("#pamt"); if (a) a.focus(); }, 50);
+}
+
 function renderTithes(){
   const main = $("#main");
   const T = titheTotals();
-  const today = new Date();
-  const todayYmd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
   const hist = S.pays.slice().sort((a,b) => (b.date || "").localeCompare(a.date || "") || (b.id || 0) - (a.id || 0));
   const found = unrecordedChecks();
   // A cheque JobHub wrote to a crew or a supplier is not a tithe, so "Record
@@ -2363,13 +2411,7 @@ function renderTithes(){
       <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div></div>
     </section>
 
-    <form class="payform" id="payform" autocomplete="off">
-      <h3>Record a tithe payment</h3>
-      <div><label for="pamt">Amount</label><input id="pamt" inputmode="decimal" placeholder="$" required></div>
-      <div><label for="pchk">Check #</label><input id="pchk" inputmode="numeric" placeholder="#"></div>
-      <div><label for="pday">Date</label><input id="pday" type="date" value="${todayYmd}"></div>
-      <button class="btn primary" type="submit">Record</button>
-    </form>
+    ${payFormHtml(true)}
     ${S.payMsg ? `<p class="paymsg">${S.payMsg}</p>` : ""}
 
     ${found.length ? `
@@ -2399,25 +2441,7 @@ function renderTithes(){
     <p class="note">What is owed is 10% of what counts toward the tithe, every saved month added up.
       When you paste a month, any cheque on it that you recorded here is found by its number and left out of that month automatically.</p>`;
 
-  $("#payform").addEventListener("submit", async e => {
-    e.preventDefault();
-    const amount = Math.round(parseFloat($("#pamt").value.replace(/[$,]/g,"")) * 100) / 100;
-    const check = $("#pchk").value.replace(/\D/g,"");
-    const date = $("#pday").value || todayYmd;
-    if (!(amount > 0)){ alert("Put the amount in."); return; }
-    const jh = regFor(check);
-    if (jh && !confirm("Check #" + jh.num + " is a " + (KIND_LABEL[jh.kind] || "JobHub payment").toLowerCase() +
-        " in JobHub (" + (jh.payee || "") + ", " + money(jh.amount) + "). Record it as a tithe anyway?")) return;
-    if (check && S.pays.some(p => String(p.check) === check)){
-      if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
-    }
-    const btn = $("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
-    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed"}]);
-    const hit = findCheck(check);
-    S.payMsg = ok ? `Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}.` +
-      (hit ? ` Found it on ${esc(hit.m.label)} and left it out of that month.` : "") : "";
-    render();
-  });
+  wirePayForm(main, msg => { S.payMsg = msg; render(); });
   main.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", async () => {
     const c = found[+b.dataset.rec];
     b.disabled = true;
@@ -2568,7 +2592,7 @@ async function saveRules(next){
 }
 
 document.querySelectorAll("[data-view]").forEach(b =>
-  b.addEventListener("click", () => { S.view = b.dataset.view; render(); }));
+  b.addEventListener("click", () => { S.view = b.dataset.view; S.payMsg = ""; render(); }));
 
 $("#btnPw").addEventListener("click", () => passwordPanel());
 
