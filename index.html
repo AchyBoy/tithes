@@ -333,6 +333,14 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
 .why{font-size:11px; color:var(--ink-3)}
 .late{color:var(--park); font-weight:600}
 .bal{font-variant-numeric:tabular-nums; font-weight:600}
+.payform{display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px; align-items:end; margin:0 0 18px}
+.payform label{display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-3); font-weight:600; margin-bottom:6px}
+.payform input{width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--paper); color:var(--ink); font:inherit; font-size:16px}
+.payform input:focus{outline:none; border-color:var(--accent)}
+.payform .btn{padding:11px 16px}
+@media (max-width:560px){.payform{grid-template-columns:1fr 1fr} .payform .btn{grid-column:1/-1}}
+.paysec{margin:22px 0 8px; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-3); font-weight:600}
+.paymsg{font-size:13px; margin:-8px 0 16px; color:var(--ink-2)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
 </style>
 </head>
@@ -344,7 +352,8 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
       <h1>Tithe <em>Ledger</em></h1>
       <div class="acts">
         <span class="seg">
-          <button class="btn" data-view="ledger">Ledger</button
+          <button class="btn" data-view="tithes">Tithes</button
+          ><button class="btn" data-view="ledger">Ledger</button
           ><button class="btn" data-view="books">Books</button
           ><button class="btn" data-view="recurring">Recurring</button
           ><button class="btn" data-view="forecast">Forecast</button
@@ -545,7 +554,7 @@ const FC_DEFAULT = {
   entries: []        // anything neither list knows about
 };
 const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, cheques:{}, qb:[], books:"mine", merch:[], chart:[], cpaView:"accounts", cpaOnly:"todo", dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
-           locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}};
+           locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}, pays:[], payMsg:""};
 const $ = s => document.querySelector(s);
 
 /* ---------- the key to the back door ---------- */
@@ -581,7 +590,7 @@ async function loadAll(){
   // The forecast's two extra calls are allowed to fail on their own. They came
   // later than the rest of the page and an older backend answers 404 to both;
   // losing the ledger over a missing forecast would be a poor trade.
-  const [m, r, c, x, f, inv, nm, ck, py, mr, qc] = await Promise.all([
+  const [m, r, c, x, f, inv, nm, ck, py, mr, qc, pm] = await Promise.all([
     api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
     api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({})),
     // Not allowed to fail quietly like the two above it. An empty payee table
@@ -592,8 +601,10 @@ async function loadAll(){
     // Both are additive and an older backend answers 404, so neither may take
     // the page down. Missing them only costs the "Hers" column.
     api("/config/cheques").catch(() => ({})), api("/config/payees").catch(() => ({})),
-    api("/config/merchants").catch(() => ({})), api("/config/qbchart").catch(() => ({}))]);
+    api("/config/merchants").catch(() => ({})), api("/config/qbchart").catch(() => ({})),
+    api("/config/payments").catch(() => ({}))]);
   S.invoices = (inv && inv.invoices) || [];
+  S.pays = (((pm && (pm.payments || pm.value)) || {}).list) || [];
   const names = (nm && nm.names) || {};
   ACH = Array.isArray(names.ach) ? names.ach : [];
   SUBS_DESC = Array.isArray(names.subs) ? names.subs : [];
@@ -762,6 +773,7 @@ function render(){
     return;
   }
   if (S.view === "forecast") return renderForecast();
+  if (S.view === "tithes") return renderTithes();
   const m = S.months.find(x => x.id === S.cur);
   if (!m){
     main.innerHTML = '<div class="offline">No months yet. Choose <b>Paste a month</b> and drop in a Chase export.</div>';
@@ -2167,6 +2179,184 @@ function entryPanel(){
   });
 }
 
+/* ============ Tithes: what he has paid, by cheque ============ */
+
+/**
+ * The cheque number on a bank row, or "". Chase writes "CHECK 1814", sometimes
+ * with the date after it.
+ */
+function checkNo(row){
+  if (row.t !== "Check Paid") return "";
+  const m = /CHECK\s*#?\s*(\d+)/i.exec(row.c || "");
+  return m ? m[1] : "";
+}
+
+/** "08/26" on the 2026-08 statement -> "2026-08-26". */
+const rowYmd = (key, d) => key.slice(0,4) + "-" + d.slice(0,2) + "-" + d.slice(3,5);
+
+/** Every month added up: owed, paid, and what is left. */
+function titheTotals(){
+  const owed = S.months.reduce((n,m) => n + totals(m.rows, S.rules).owed, 0);
+  const paid = S.pays.reduce((n,p) => n + (Number(p.amount) || 0), 0);
+  return {owed, paid, left: owed - paid};
+}
+
+/** Where a cheque number turns up in the saved statements, if anywhere. */
+function findCheck(no){
+  if (!no) return null;
+  for (const m of S.months)
+    for (let i = 0; i < m.rows.length; i++)
+      if (checkNo(m.rows[i]) === no) return {m, i, row:m.rows[i]};
+  return null;
+}
+
+async function savePays(next){
+  const before = S.pays;
+  S.pays = next;
+  try { await api("/config/payments", {method:"PUT", body:{payments:{list:next}}}); return true; }
+  catch(e){
+    S.pays = before;
+    if (e.message !== "Locked") alert("That payment didn't save. " + e.message);
+    return false;
+  }
+}
+
+/**
+ * Record one or more payments. A cheque that is already on a saved statement
+ * gets left out of that month too: it is giving, not a business cost, so it
+ * must not shrink the tithe it is paying.
+ */
+async function recordPays(list){
+  const ok = await savePays([...S.pays, ...list]);
+  if (!ok) return false;
+  const touched = new Set();
+  for (const p of list){
+    const hit = findCheck(p.check);
+    if (hit && !hit.row.x){
+      hit.m.rows = hit.m.rows.map((r,k) => k === hit.i ? {...r, x:1, i:0} : r);
+      touched.add(hit.m);
+    }
+  }
+  for (const m of touched){
+    try { await api("/months/" + m.id, {method:"PUT", body:{label:m.label, rows:m.rows}}); }
+    catch(e){ if (e.message !== "Locked") alert("The payment saved, but leaving the cheque out of " + m.label + " didn't. " + e.message); }
+  }
+  return true;
+}
+
+/**
+ * Cheques already left out of a statement that are not in the payment list.
+ * Those are the church cheques he excluded by hand before this screen existed,
+ * offered back one tap at a time rather than recorded behind his back.
+ */
+function unrecordedChecks(){
+  const have = new Set(S.pays.map(p => String(p.check || "")).filter(Boolean));
+  const out = [];
+  for (const m of S.months)
+    m.rows.forEach(r => {
+      const no = checkNo(r);
+      if (no && r.x && !have.has(no))
+        out.push({check:no, amount:Math.abs(Number(r.a) || 0), date:rowYmd(m.key, r.d), month:m.label});
+    });
+  return out.sort((a,b) => b.date.localeCompare(a.date));
+}
+
+const prettyDay = ymdStr => {
+  const [y,mo,d] = String(ymdStr || "").split("-").map(Number);
+  return y ? MONTHS[mo-1] + " " + d + ", " + y : "";
+};
+
+function renderTithes(){
+  const main = $("#main");
+  const T = titheTotals();
+  const today = new Date();
+  const todayYmd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
+  const hist = S.pays.slice().sort((a,b) => (b.date || "").localeCompare(a.date || "") || (b.id || 0) - (a.id || 0));
+  const found = unrecordedChecks();
+
+  main.innerHTML = `
+    <section class="summary">
+      <div class="cell owed">
+        <div class="k">Tithes still owed</div>
+        <div class="v num">${money(T.left)}</div>
+        <div class="sub">${money(T.owed)} owed across ${S.months.length} months, less ${money(T.paid)} paid</div>
+      </div>
+      <div class="cell"><div class="k">Owed</div><div class="v num">${money(T.owed)}</div></div>
+      <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div></div>
+    </section>
+
+    <form class="payform" id="payform" autocomplete="off">
+      <div><label for="pamt">Amount</label><input id="pamt" inputmode="decimal" placeholder="300.00" required></div>
+      <div><label for="pchk">Check #</label><input id="pchk" inputmode="numeric" placeholder="1815"></div>
+      <div><label for="pday">Date</label><input id="pday" type="date" value="${todayYmd}"></div>
+      <button class="btn primary" type="submit">Record</button>
+    </form>
+    ${S.payMsg ? `<p class="paymsg">${S.payMsg}</p>` : ""}
+
+    ${found.length ? `
+      <div class="paysec">On your statements, not recorded yet</div>
+      <p class="hint">Cheques you left out of a month. If they were tithes, record them so they come off what you owe.</p>
+      <div class="scroll"><table class="fctab">
+        <thead><tr><th>Date</th><th>Check #</th><th class="r-amt">Amount</th><th></th></tr></thead>
+        <tbody>${found.map((c,k) => `<tr>
+          <td>${prettyDay(c.date)}</td><td class="num">${esc(c.check)}</td>
+          <td class="r-amt num">${money(c.amount)}</td>
+          <td style="text-align:right"><button class="btn" data-rec="${k}">Record</button></td></tr>`).join("")}
+        </tbody></table></div>
+      ${found.length > 1 ? `<div class="pfoot" style="justify-content:flex-start"><button class="btn" id="recAll">Record all ${found.length}, ${money(found.reduce((n,c) => n + c.amount, 0))}</button></div>` : ""}` : ""}
+
+    <div class="paysec">History</div>
+    ${hist.length ? `<div class="scroll"><table class="fctab">
+      <thead><tr><th>Date</th><th>Check #</th><th class="r-amt">Amount</th><th>Cleared</th><th></th></tr></thead>
+      <tbody>${hist.map(p => {
+        const hit = findCheck(p.check);
+        return `<tr>
+          <td>${prettyDay(p.date)}</td><td class="num">${esc(p.check || "")}</td>
+          <td class="r-amt num">${money(Number(p.amount) || 0)}</td>
+          <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
+          <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
+      }).join("")}</tbody></table></div>`
+    : `<p class="hint">Nothing recorded yet.</p>`}
+    <p class="note">What is owed is 10% of what counts toward the tithe, every saved month added up.
+      When you paste a month, any cheque on it that you recorded here is found by its number and left out of that month automatically.</p>`;
+
+  $("#payform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const amount = Math.round(parseFloat($("#pamt").value.replace(/[$,]/g,"")) * 100) / 100;
+    const check = $("#pchk").value.replace(/\D/g,"");
+    const date = $("#pday").value || todayYmd;
+    if (!(amount > 0)){ alert("Put the amount in."); return; }
+    if (check && S.pays.some(p => String(p.check) === check)){
+      if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
+    }
+    const btn = $("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
+    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed"}]);
+    const hit = findCheck(check);
+    S.payMsg = ok ? `Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}.` +
+      (hit ? ` Found it on ${esc(hit.m.label)} and left it out of that month.` : "") : "";
+    render();
+  });
+  main.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", async () => {
+    const c = found[+b.dataset.rec];
+    b.disabled = true;
+    await recordPays([{id:Date.now(), date:c.date, amount:c.amount, check:c.check, src:"statement"}]);
+    S.payMsg = ""; render();
+  }));
+  const ra = $("#recAll");
+  if (ra) ra.addEventListener("click", async () => {
+    ra.disabled = true;
+    const t = Date.now();
+    await recordPays(found.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, src:"statement"})));
+    S.payMsg = ""; render();
+  });
+  main.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
+    const p = S.pays.find(x => String(x.id) === b.dataset.del);
+    if (!p || !confirm("Remove " + money(Number(p.amount) || 0) + (p.check ? ", check " + p.check : "") + "?")) return;
+    await savePays(S.pays.filter(x => x !== p));
+    S.payMsg = ""; render();
+  }));
+}
+
 function panel(title, inner){
   const s = document.createElement("div");
   s.className = "scrim";
@@ -2197,6 +2387,16 @@ $("#btnPaste").addEventListener("click", () => {
     const {mm, yr} = guessMonth(rows);
     const t = totals(rows, S.rules);
     const existing = S.months.find(x => x.key === `${yr}-${mm}`);
+    // Every cheque on the statement. One already recorded is a tithe for sure;
+    // one already left out of this month before, or the same amount as a tithe
+    // paid before, is ticked as a guess he can untick.
+    const recorded = new Set(S.pays.map(p => String(p.check || "")).filter(Boolean));
+    const amounts = new Set(S.pays.map(p => Math.round(Math.abs(Number(p.amount) || 0) * 100)));
+    const wasOut = new Set(((existing && existing.rows) || []).filter(r => r.x).map(checkNo).filter(Boolean));
+    const checks = rows.map(r => ({row:r, check:checkNo(r), amount:Math.abs(Number(r.a) || 0)}))
+      .filter(c => c.check)
+      .map(c => ({...c, known:recorded.has(c.check),
+                  guess:wasOut.has(c.check) || amounts.has(Math.round(c.amount * 100))}));
     out.innerHTML = `<div class="readout">
       <div class="row"><span>Rows read</span><span>${rows.length}</span></div>
       <div class="row"><span>Month</span><span>${MONTHS[+mm-1]} ${String(yr).slice(2)}</span></div>
@@ -2210,6 +2410,12 @@ $("#btnPaste").addEventListener("click", () => {
       <div class="row"><span>Tithes owed</span><span><b>${money(t.owed)}</b></span></div>
       ${existing ? `<div class="row"><span class="bad">${MONTHS[+mm-1]} already exists</span><span>saving replaces it</span></div>` : ""}
     </div>
+    ${checks.length ? `<div class="paysec">Checks on this statement</div>
+      <p class="hint">Tick the ones that were tithes. They get recorded as paid and left out of the month.</p>
+      ${checks.map((c,k) => `<label class="pick" style="padding:5px 0">
+        <input type="checkbox" data-ck="${k}" ${c.known || c.guess ? "checked" : ""} ${c.known ? "disabled" : ""}>
+        <span>Check ${esc(c.check)} &middot; ${money(c.amount)} &middot; ${esc(c.row.d)}
+          <span class="why">${c.known ? "already recorded" : c.guess ? "same as a tithe you paid before" : ""}</span></span></label>`).join("")}` : ""}
     <div class="pfoot">
       <button class="btn" data-close>Cancel</button>
       <button class="btn primary" id="save">${existing ? "Replace" : "Save"} ${MONTHS[+mm-1]} ${String(yr).slice(2)}</button>
@@ -2219,8 +2425,16 @@ $("#btnPaste").addEventListener("click", () => {
       const label = `${MONTHS[+mm-1]} ${String(yr).slice(2)}`;
       const btn = out.querySelector("#save");
       btn.disabled = true; btn.textContent = "Saving\u2026";
+      const tithes = checks.filter((c,k) => c.known || out.querySelector(`[data-ck="${k}"]`).checked);
+      tithes.forEach(c => { c.row.x = 1; c.row.i = 0; });
+      const fresh = tithes.filter(c => !c.known);
       try {
         await api("/months/" + key, {method:"PUT", body:{label, rows}});
+        if (fresh.length){
+          const t = Date.now();
+          const next = [...S.pays, ...fresh.map((c,k) => ({id:t + k, date:rowYmd(key, c.row.d), amount:c.amount, check:c.check, src:"statement"}))];
+          await api("/config/payments", {method:"PUT", body:{payments:{list:next}}});
+        }
         await loadAll();
       } catch(ex){
         btn.disabled = false; btn.textContent = "Try again";
