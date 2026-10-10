@@ -339,6 +339,13 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
 .payform input:focus{outline:none; border-color:var(--accent)}
 .payform .btn{padding:11px 16px}
 @media (max-width:560px){.payform{grid-template-columns:1fr 1fr} .payform .btn{grid-column:1/-1}}
+.ckb{display:inline-block; margin-left:6px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); background:var(--surface); color:var(--ink-2); font:600 11px/1.5 inherit; cursor:pointer; white-space:nowrap; vertical-align:1px}
+.ckb.crew{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+.ckb.supplier{background:var(--park-soft); border-color:var(--park); color:var(--park)}
+.ckpart{padding:12px 0; border-top:1px solid var(--line)}
+.ckpart:first-of-type{border-top:0}
+.ckpart .who{font-weight:600}
+.ckpart .row{display:flex; justify-content:space-between; gap:12px; font-size:13px; color:var(--ink-2); padding:2px 0}
 .paysec{margin:22px 0 8px; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-3); font-weight:600}
 .paymsg{font-size:13px; margin:-8px 0 16px; color:var(--ink-2)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
@@ -554,7 +561,7 @@ const FC_DEFAULT = {
   entries: []        // anything neither list knows about
 };
 const S = {months:[], cur:null, rules:{...DEFAULT_RULES}, cats:{}, cheques:{}, qb:[], books:"mine", merch:[], chart:[], cpaView:"accounts", cpaOnly:"todo", dismissed:[], added:[], view:"ledger", q:"", filter:"all", all:false,
-           locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}, pays:[], payMsg:""};
+           locked:true, ready:false, offline:false, invoices:[], fc:{...FC_DEFAULT}, pays:[], payMsg:"", reg:{}};
 const $ = s => document.querySelector(s);
 
 /* ---------- the key to the back door ---------- */
@@ -590,7 +597,7 @@ async function loadAll(){
   // The forecast's two extra calls are allowed to fail on their own. They came
   // later than the rest of the page and an older backend answers 404 to both;
   // losing the ledger over a missing forecast would be a poor trade.
-  const [m, r, c, x, f, inv, nm, ck, py, mr, qc, pm] = await Promise.all([
+  const [m, r, c, x, f, inv, nm, ck, py, mr, qc, pm, rg] = await Promise.all([
     api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
     api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({})),
     // Not allowed to fail quietly like the two above it. An empty payee table
@@ -602,9 +609,14 @@ async function loadAll(){
     // the page down. Missing them only costs the "Hers" column.
     api("/config/cheques").catch(() => ({})), api("/config/payees").catch(() => ({})),
     api("/config/merchants").catch(() => ({})), api("/config/qbchart").catch(() => ({})),
-    api("/config/payments").catch(() => ({}))]);
+    api("/config/payments").catch(() => ({})),
+    // JobHub's own record of the cheques it wrote: crew pay and supplier
+    // payments, with job, phase and PO. Additive, so it may not take the page down.
+    api("/cheques").catch(() => ({}))]);
   S.invoices = (inv && inv.invoices) || [];
   S.pays = (((pm && (pm.payments || pm.value)) || {}).list) || [];
+  S.reg = {};
+  ((rg && rg.cheques) || []).forEach(c => { S.reg[c.num] = c; });
   const names = (nm && nm.names) || {};
   ACH = Array.isArray(names.ach) ? names.ach : [];
   SUBS_DESC = Array.isArray(names.subs) ? names.subs : [];
@@ -872,7 +884,7 @@ function renderRows(){
       return `<tr class="${cls}">
         <td class="r-date num">${esc(r.d)}${S.all ? `<br><small style="color:var(--ink-3)">${esc(r._m)}</small>` : ""}</td>
         <td class="r-type">${esc(r.t)}</td>
-        <td class="r-desc">${hl(r.c, q)}</td>
+        <td class="r-desc">${hl(r.c, q)}${r.t === "Check Paid" ? chkBadge(checkNo(r), r.a) : ""}</td>
         <td class="r-amt num ${r.a < 0 ? "neg" : "pos"}">${money(r.a)}</td>
         <td class="r-cnt num">${c.f ? money(c.f) : '<span style="color:var(--ink-3)">—</span>'}</td>
         <td>${tag}</td>
@@ -2179,6 +2191,62 @@ function entryPanel(){
   });
 }
 
+/* ============ Cheques JobHub wrote: crew pay and materials ============ */
+
+/**
+ * What JobHub knows about a cheque number, or null.
+ *
+ * Chase prints only the last four digits, so business cheque 11916 arrives as
+ * "1916", and so would a personal cheque 1916. The tithe cheques are in that
+ * personal 18xx/19xx run, so a number alone can name the wrong cheque. Given
+ * the bank amount, the match must agree on the amount too (46 of 49 do; the
+ * other 3 were different cheques). With no amount, only an exact number counts:
+ * that is a number he typed in full.
+ */
+function regFor(no, amount){
+  no = String(no || "").replace(/^0+/, "");
+  if (!no) return null;
+  if (amount === undefined) return S.reg[no] || null;
+  const a = Math.abs(Number(amount) || 0);
+  return [S.reg[no], S.reg["1" + no]].find(c => c && Math.abs(c.amount - a) < 0.01) || null;
+}
+
+const KIND_LABEL = {crew:"Crew payment", supplier:"Material payment", mixed:"Crew + materials"};
+
+/** The tappable badge, or "" when JobHub never wrote this cheque. */
+function chkBadge(no, amount){
+  const c = regFor(no, amount);
+  return c ? `<button type="button" class="ckb ${c.kind}" data-chk="${esc(c.num)}">#${esc(c.num)} &middot; ${KIND_LABEL[c.kind] || "JobHub"}</button>` : "";
+}
+
+/** What one cheque paid for: who, which job and phase, and the PO for materials. */
+function chequePanel(num){
+  const c = S.reg[num];
+  if (!c) return;
+  panel("Check #" + c.num + " \u00b7 " + (KIND_LABEL[c.kind] || ""), `
+    <div class="readout">
+      <div class="row"><span>Total</span><span><b>${money(c.amount)}</b></span></div>
+      ${c.date ? `<div class="row"><span>Written</span><span>${prettyDay(c.date)}</span></div>` : ""}
+      ${c.parts.length > 1 ? `<div class="row"><span>Covers</span><span>${c.parts.length} payments</span></div>` : ""}
+    </div>
+    ${c.parts.map(p => `<div class="ckpart">
+      <div class="who">${esc(p.payee || (p.source === "crew" ? "Crew" : "Supplier"))}</div>
+      ${p.job ? `<div class="row"><span>Job</span><span>${esc(p.job)}</span></div>` : ""}
+      ${p.phase ? `<div class="row"><span>Phase</span><span>${esc(p.phase)}</span></div>` : ""}
+      ${p.po ? `<div class="row"><span>P.O.</span><span>#${esc(p.po)}</span></div>` : ""}
+      ${p.what && p.what !== "payment" ? `<div class="row"><span>For</span><span>${esc(p.what[0].toUpperCase() + p.what.slice(1))}</span></div>` : ""}
+      <div class="row"><span>Amount</span><span>${money(p.amount)}</span></div>
+    </div>`).join("")}`);
+}
+
+// One listener for every badge on every screen, panels included.
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest(".ckb");
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  chequePanel(b.dataset.chk);
+}, true);
+
 /* ============ Tithes: what he has paid, by cheque ============ */
 
 /**
@@ -2273,6 +2341,9 @@ function renderTithes(){
   const todayYmd = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
   const hist = S.pays.slice().sort((a,b) => (b.date || "").localeCompare(a.date || "") || (b.id || 0) - (a.id || 0));
   const found = unrecordedChecks();
+  // A cheque JobHub wrote to a crew or a supplier is not a tithe, so "Record
+  // all" leaves it alone. It can still be recorded one at a time.
+  const bulk = found.filter(c => !regFor(c.check, c.amount));
 
   main.innerHTML = `
     <section class="summary">
@@ -2299,11 +2370,11 @@ function renderTithes(){
       <div class="scroll"><table class="fctab">
         <thead><tr><th>Date</th><th>Check #</th><th class="r-amt">Amount</th><th></th></tr></thead>
         <tbody>${found.map((c,k) => `<tr>
-          <td>${prettyDay(c.date)}</td><td class="num">${esc(c.check)}</td>
+          <td>${prettyDay(c.date)}</td><td class="num">${esc(c.check)}${chkBadge(c.check, c.amount)}</td>
           <td class="r-amt num">${money(c.amount)}</td>
           <td style="text-align:right"><button class="btn" data-rec="${k}">Record</button></td></tr>`).join("")}
         </tbody></table></div>
-      ${found.length > 1 ? `<div class="pfoot" style="justify-content:flex-start"><button class="btn" id="recAll">Record all ${found.length}, ${money(found.reduce((n,c) => n + c.amount, 0))}</button></div>` : ""}` : ""}
+      ${bulk.length > 1 ? `<div class="pfoot" style="justify-content:flex-start"><button class="btn" id="recAll">Record all ${bulk.length}, ${money(bulk.reduce((n,c) => n + c.amount, 0))}</button></div>` : ""}` : ""}
 
     <div class="paysec">History</div>
     ${hist.length ? `<div class="scroll"><table class="fctab">
@@ -2311,7 +2382,7 @@ function renderTithes(){
       <tbody>${hist.map(p => {
         const hit = findCheck(p.check);
         return `<tr>
-          <td>${prettyDay(p.date)}</td><td class="num">${esc(p.check || "")}</td>
+          <td>${prettyDay(p.date)}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
           <td class="r-amt num">${money(Number(p.amount) || 0)}</td>
           <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
@@ -2326,6 +2397,9 @@ function renderTithes(){
     const check = $("#pchk").value.replace(/\D/g,"");
     const date = $("#pday").value || todayYmd;
     if (!(amount > 0)){ alert("Put the amount in."); return; }
+    const jh = regFor(check);
+    if (jh && !confirm("Check #" + jh.num + " is a " + (KIND_LABEL[jh.kind] || "JobHub payment").toLowerCase() +
+        " in JobHub (" + (jh.payee || "") + ", " + money(jh.amount) + "). Record it as a tithe anyway?")) return;
     if (check && S.pays.some(p => String(p.check) === check)){
       if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
     }
@@ -2346,7 +2420,7 @@ function renderTithes(){
   if (ra) ra.addEventListener("click", async () => {
     ra.disabled = true;
     const t = Date.now();
-    await recordPays(found.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, src:"statement"})));
+    await recordPays(bulk.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, src:"statement"})));
     S.payMsg = ""; render();
   });
   main.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
@@ -2396,7 +2470,7 @@ $("#btnPaste").addEventListener("click", () => {
     const checks = rows.map(r => ({row:r, check:checkNo(r), amount:Math.abs(Number(r.a) || 0)}))
       .filter(c => c.check)
       .map(c => ({...c, known:recorded.has(c.check),
-                  guess:wasOut.has(c.check) || amounts.has(Math.round(c.amount * 100))}));
+                  guess:!regFor(c.check, c.amount) && (wasOut.has(c.check) || amounts.has(Math.round(c.amount * 100)))}));
     out.innerHTML = `<div class="readout">
       <div class="row"><span>Rows read</span><span>${rows.length}</span></div>
       <div class="row"><span>Month</span><span>${MONTHS[+mm-1]} ${String(yr).slice(2)}</span></div>
@@ -2414,7 +2488,7 @@ $("#btnPaste").addEventListener("click", () => {
       <p class="hint">Tick the ones that were tithes. They get recorded as paid and left out of the month.</p>
       ${checks.map((c,k) => `<label class="pick" style="padding:5px 0">
         <input type="checkbox" data-ck="${k}" ${c.known || c.guess ? "checked" : ""} ${c.known ? "disabled" : ""}>
-        <span>Check ${esc(c.check)} &middot; ${money(c.amount)} &middot; ${esc(c.row.d)}
+        <span>Check ${esc(c.check)} &middot; ${money(c.amount)} &middot; ${esc(c.row.d)}${chkBadge(c.check, c.amount)}
           <span class="why">${c.known ? "already recorded" : c.guess ? "same as a tithe you paid before" : ""}</span></span></label>`).join("")}` : ""}
     <div class="pfoot">
       <button class="btn" data-close>Cancel</button>
