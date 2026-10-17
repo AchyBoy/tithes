@@ -828,9 +828,9 @@ function render(){
         ${S.all ? `<div class="k">Tithes ${leftLabel(titheTotals().left).toLowerCase()} &middot; all months</div>
         <div class="v num">${money(Math.abs(titheTotals().left))}</div>
         <div class="sub">${money(titheTotals().owed)} owed, less ${money(titheTotals().paid)} paid</div>` : (() => {
-          const mp = paidFor(m.key), left = t.owed - mp;
+          const mp = paidFor(m.key), left = monthOwed(m) - mp;
           return `<div class="k">${isPaidUp(m.key) ? "Tithes &middot; paid up" : mp && Math.abs(left) < 0.005 ? "Tithes &middot; paid" : mp ? "Tithes " + leftLabel(left).toLowerCase() : "Tithes owed"}</div>
-        <div class="v num">${money(isPaidUp(m.key) ? 0 : mp ? Math.abs(left) : t.owed)}</div>
+        <div class="v num">${money(isPaidUp(m.key) ? 0 : mp ? Math.abs(left) : monthOwed(m))}</div>
         <div class="sub">10% of ${money(t.base)} is ${money(t.owed)}${mp ? `, less ${money(mp)} paid` : ""}</div>
         <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b></div>`;
         })()}
@@ -940,7 +940,7 @@ function renderMonths(){
     return `<button class="mtab" role="tab" aria-selected="${m.id===S.cur && !S.all}" data-id="${m.id}">
       ${esc(m.label)}<small>${money(t.owed)}</small>${(() => {
         // The tithe as figured, then where payments left it.
-        const pd = paidFor(m.key), left = t.owed - pd;
+        const pd = paidFor(m.key), left = monthOwed(m) - pd;
         const st = isPaidUp(m.key) ? "paid up" : !pd ? "" : Math.abs(left) < 0.005 ? "paid"
           : left < 0 ? "ahead " + money(-left) : money(left) + " left";
         return st ? `<small class="mst">${st}</small>` : "";
@@ -2336,10 +2336,16 @@ const monthState = key => {
   return " \u00b7 " + money(left) + " left";
 };
 
+/**
+ * One month's tithe, to the cent. A month where more came off than counted
+ * (Dec 25) owes nothing; it is not a credit against the other months.
+ */
+const monthOwed = m => Math.max(0, Math.round(totals(m.rows, S.rules).owed * 100) / 100);
+
 /** What one saved month still owes after the payments toward it. */
 const monthLeft = key => {
   const m = S.months.find(x => x.key === key);
-  return m ? totals(m.rows, S.rules).owed - paidFor(key) : 0;
+  return m ? monthOwed(m) - paidFor(key) : 0;
 };
 
 const monthLabel = key => MONTHS[+key.slice(5,7) - 1] + " " + key.slice(2,4);
@@ -2358,7 +2364,7 @@ const paymentsBody = list => ({payments:{list, paidUp:S.paidUp || [], notes:S.no
 
 function titheTotals(){
   // A month he marked paid up is settled: its owed is cleared, not counted.
-  const owed = S.months.reduce((n,m) => isPaidUp(m.key) ? n : n + totals(m.rows, S.rules).owed, 0);
+  const owed = S.months.reduce((n,m) => isPaidUp(m.key) ? n : n + monthOwed(m), 0);
   // A payment can carry a gift: the part he gave on top, which he chose not to
   // credit toward later months. Only the rest comes off what is owed.
   let paid = 0, gift = 0;
@@ -2671,7 +2677,7 @@ function renderTithes(){
         const pu = isPaidUp(m.key);
         return `<tr>
           <td>${esc(m.label)}</td>
-          <td class="r-amt num">${pu ? `<span class="why" style="text-decoration:line-through">${money(totals(m.rows, S.rules).owed)}</span>` : money(totals(m.rows, S.rules).owed - paidFor(m.key))}${!pu && paidFor(m.key) ? `<br><span class="why">${money(paidFor(m.key))} paid</span>` : ""}</td>
+          <td class="r-amt num">${pu ? `<span class="why" style="text-decoration:line-through">${money(totals(m.rows, S.rules).owed)}</span>` : money(monthLeft(m.key))}${!pu && paidFor(m.key) ? `<br><span class="why">${money(paidFor(m.key))} paid</span>` : ""}</td>
           <td style="text-align:right"><button class="ttb" data-pu="${esc(m.key)}" aria-pressed="${pu}">${pu ? "Paid up ✓" : "Mark paid up"}</button></td></tr>`;
       }).join("")}</tbody></table></div>
 
