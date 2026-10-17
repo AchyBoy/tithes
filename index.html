@@ -819,10 +819,10 @@ function render(){
   main.innerHTML = `
     <section class="summary">
       <div class="cell owed">
-        <div class="k">Tithes owed${S.all ? " · all months" : ""}</div>
-        <div class="v num">${money(t.owed)}</div>
-        <div class="sub">10% of ${money(t.base)}${!S.all && isPaidUp(m.key) ? " &middot; <b>paid up</b>" : ""}</div>
-        <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b> &middot; paid ${money(titheTotals().paid)}</div>
+        <div class="k">Tithes ${leftLabel(titheTotals().left).toLowerCase()}</div>
+        <div class="v num">${money(Math.abs(titheTotals().left))}</div>
+        <div class="sub">All months, less ${money(titheTotals().paid)} paid</div>
+        <div class="sub" style="margin-top:10px">${S.all ? "Every month" : esc(m.label)}: <b>${money(t.owed)}</b>, 10% of ${money(t.base)}${!S.all && isPaidUp(m.key) ? " &middot; <b>paid up</b>" : ""}</div>
         ${S.payMsg ? `<div class="sub">${S.payMsg}</div>` : ""}
         <button class="btn primary" id="btnPay" style="margin-top:12px">Record a payment</button>
       </div>
