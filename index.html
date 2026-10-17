@@ -819,10 +819,15 @@ function render(){
   main.innerHTML = `
     <section class="summary">
       <div class="cell owed">
-        <div class="k">Tithes ${leftLabel(titheTotals().left).toLowerCase()}</div>
+        ${S.all ? `<div class="k">Tithes ${leftLabel(titheTotals().left).toLowerCase()} &middot; all months</div>
         <div class="v num">${money(Math.abs(titheTotals().left))}</div>
-        <div class="sub">All months, less ${money(titheTotals().paid)} paid</div>
-        <div class="sub" style="margin-top:10px">${S.all ? "Every month" : esc(m.label)}: <b>${money(t.owed)}</b>, 10% of ${money(t.base)}${!S.all && isPaidUp(m.key) ? " &middot; <b>paid up</b>" : ""}</div>
+        <div class="sub">${money(titheTotals().owed)} owed, less ${money(titheTotals().paid)} paid</div>` : (() => {
+          const mp = paidFor(m.key), left = t.owed - mp;
+          return `<div class="k">${isPaidUp(m.key) ? "Tithes &middot; paid up" : mp ? "Tithes " + leftLabel(left).toLowerCase() : "Tithes owed"}</div>
+        <div class="v num">${money(isPaidUp(m.key) ? 0 : Math.abs(left))}</div>
+        <div class="sub">10% of ${money(t.base)} is ${money(t.owed)}${mp ? `, less ${money(mp)} paid` : ""}</div>
+        <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b></div>`;
+        })()}
         ${S.payMsg ? `<div class="sub">${S.payMsg}</div>` : ""}
         <button class="btn primary" id="btnPay" style="margin-top:12px">Record a payment</button>
       </div>
@@ -927,7 +932,7 @@ function renderMonths(){
   el.innerHTML = S.months.map(m => {
     const t = totals(m.rows, S.rules);
     return `<button class="mtab" role="tab" aria-selected="${m.id===S.cur && !S.all}" data-id="${m.id}">
-      ${esc(m.label)}<small>${isPaidUp(m.key) ? "paid up" : money(t.owed)}</small></button>`;
+      ${esc(m.label)}<small>${isPaidUp(m.key) ? "paid up" : paidFor(m.key) && t.owed - paidFor(m.key) < 0.005 ? "ahead " + money(paidFor(m.key) - t.owed) : money(t.owed - paidFor(m.key))}</small></button>`;
   }).join("");
   el.querySelectorAll(".mtab").forEach(b =>
     b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
@@ -2291,6 +2296,16 @@ const rowYmd = (key, d) => key.slice(0,4) + "-" + d.slice(0,2) + "-" + d.slice(3
 /** Every month added up: owed, paid, and what is left. */
 const isPaidUp = key => (S.paidUp || []).includes(key);
 
+/**
+ * The month a payment pays toward: the one he recorded it against, else the
+ * month of the row he marked, else the month of its date.
+ */
+const payMonth = p => p.month || (p.row ? String(p.row).split("|")[0] : String(p.date || "").slice(0,7));
+
+/** What came off one month's tithe. A gift never does. */
+const paidFor = key => S.pays.reduce((n,p) => payMonth(p) !== key ? n
+  : n + (Number(p.amount) || 0) - Math.min(Number(p.amount) || 0, Number(p.gift) || 0), 0);
+
 function titheTotals(){
   // A month he marked paid up is settled: its owed is cleared, not counted.
   const owed = S.months.reduce((n,m) => isPaidUp(m.key) ? n : n + totals(m.rows, S.rules).owed, 0);
@@ -2464,7 +2479,7 @@ function payFormHtml(heading){
 }
 
 /** Saves what was typed into the form under `root`, then hands back a line saying what happened. */
-function wirePayForm(root, done){
+function wirePayForm(root, done, month){
   const q = sel => root.querySelector(sel);
   q("#payform").addEventListener("submit", async e => {
     e.preventDefault();
@@ -2481,7 +2496,7 @@ function wirePayForm(root, done){
     const gift = await askExtra(amount);
     if (gift === null) return;
     const btn = q("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
-    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...(gift ? {gift} : {})}]);
+    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...(month ? {month} : {}), ...(gift ? {gift} : {})}]);
     if (!ok){ btn.disabled = false; btn.textContent = "Record"; return; }
     const hit = findCheck(check);
     done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}${gift ? ", " + money(gift) + " of it a gift" : ""}.` +
@@ -2490,8 +2505,10 @@ function wirePayForm(root, done){
 }
 
 function payPanel(){
-  const s = panel("Record a tithe payment", payFormHtml(false));
-  wirePayForm(s, msg => { s.remove(); S.payMsg = msg; render(); });
+  // From a month's card it pays toward that month.
+  const m = !S.all && S.view === "ledger" && S.months.find(x => x.id === S.cur);
+  const s = panel(m ? "Record a tithe payment for " + m.label : "Record a tithe payment", payFormHtml(false));
+  wirePayForm(s, msg => { s.remove(); S.payMsg = msg; render(); }, m ? m.key : "");
   setTimeout(() => { const a = s.querySelector("#pamt"); if (a) a.focus(); }, 50);
 }
 
@@ -2533,12 +2550,12 @@ function renderTithes(){
     <div class="paysec">By month</div>
     <p class="hint">A month you already settled, mark it paid up and its owed is cleared.</p>
     <div class="scroll"><table class="fctab">
-      <thead><tr><th>Month</th><th class="r-amt">Owed</th><th></th></tr></thead>
+      <thead><tr><th>Month</th><th class="r-amt">Left</th><th></th></tr></thead>
       <tbody>${S.months.map(m => {
         const pu = isPaidUp(m.key);
         return `<tr>
           <td>${esc(m.label)}</td>
-          <td class="r-amt num">${pu ? `<span class="why" style="text-decoration:line-through">${money(totals(m.rows, S.rules).owed)}</span>` : money(totals(m.rows, S.rules).owed)}</td>
+          <td class="r-amt num">${pu ? `<span class="why" style="text-decoration:line-through">${money(totals(m.rows, S.rules).owed)}</span>` : money(totals(m.rows, S.rules).owed - paidFor(m.key))}${!pu && paidFor(m.key) ? `<br><span class="why">${money(paidFor(m.key))} paid</span>` : ""}</td>
           <td style="text-align:right"><button class="ttb" data-pu="${esc(m.key)}" aria-pressed="${pu}">${pu ? "Paid up ✓" : "Mark paid up"}</button></td></tr>`;
       }).join("")}</tbody></table></div>
 
@@ -2548,7 +2565,7 @@ function renderTithes(){
       <tbody>${hist.map(p => {
         const hit = findCheck(p.check);
         return `<tr>
-          <td>${prettyDay(p.date)}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
+          <td>${prettyDay(p.date)}${(() => { const pm = S.months.find(x => x.key === payMonth(p)); return pm ? `<br><span class="why">for ${esc(pm.label)}</span>` : ""; })()}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
           <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}</td>
           <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
