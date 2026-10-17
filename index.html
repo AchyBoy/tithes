@@ -191,6 +191,14 @@ tr.look td{background:var(--look-soft)}
 .inc{border-color:var(--accent-line); color:var(--accent)}
 .inc:hover{background:var(--accent-soft); border-color:var(--accent)}
 .inc.on{background:var(--accent); border-color:var(--accent); color:#fff}
+.rctl{display:flex; gap:5px; align-items:center}
+.ttb{
+  height:27px; border-radius:7px; border:1.5px solid var(--accent-line); background:var(--surface);
+  color:var(--accent); font-size:11.5px; font-weight:600; padding:0 7px; white-space:nowrap;
+}
+.ttb[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:#fff}
+tr.parked.tithe td{background:var(--accent-soft)}
+tr.parked.tithe .r-desc,tr.parked.tithe .r-amt{text-decoration:none; opacity:1}
 tr.grp td{background:var(--sunk); border-top:1px solid var(--line)}
 tr.grp td:first-child{letter-spacing:.02em}
 tr.acct,tr.rec{cursor:pointer}
@@ -615,7 +623,10 @@ async function loadAll(){
     // payments, with job, phase and PO. Additive, so it may not take the page down.
     api("/cheques").catch(() => ({}))]);
   S.invoices = (inv && inv.invoices) || [];
-  S.pays = (((pm && (pm.payments || pm.value)) || {}).list) || [];
+  const pv = (pm && (pm.payments || pm.value)) || {};
+  S.pays = pv.list || [];
+  // Months he has already settled outside this page. Their owed is cleared.
+  S.paidUp = Array.isArray(pv.paidUp) ? pv.paidUp : [];
   S.reg = {};
   ((rg && rg.cheques) || []).forEach(c => { S.reg[c.num] = c; });
   const names = (nm && nm.names) || {};
@@ -810,7 +821,7 @@ function render(){
       <div class="cell owed">
         <div class="k">Tithes owed${S.all ? " · all months" : ""}</div>
         <div class="v num">${money(t.owed)}</div>
-        <div class="sub">10% of ${money(t.base)}</div>
+        <div class="sub">10% of ${money(t.base)}${!S.all && isPaidUp(m.key) ? " &middot; <b>paid up</b>" : ""}</div>
         <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b> &middot; paid ${money(titheTotals().paid)}</div>
         ${S.payMsg ? `<div class="sub">${S.payMsg}</div>` : ""}
         <button class="btn primary" id="btnPay" style="margin-top:12px">Record a payment</button>
@@ -882,8 +893,8 @@ function renderRows(){
   } else {
     body.innerHTML = list.map(r => {
       const c = classify(r, S.rules);
-      const cls = r.x ? "parked" : (c.kind === "look" ? "look" : "");
-      const tag = c.rule
+      const cls = r.x ? (r.tt ? "parked tithe" : "parked") : (c.kind === "look" ? "look" : "");
+      const tag = r.x && r.tt ? `<span class="tag on">Tithe paid</span>` : c.rule
         ? `<span class="tag ${c.kind === "on" ? "on" : c.kind === "look" ? "look" : "off"}">${esc(c.rule)}</span>`
         : "";
       return `<tr class="${cls}">
@@ -897,6 +908,7 @@ function renderRows(){
       </tr>`;
     }).join("");
     body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => setFlag(b.dataset.m, +b.dataset.i, "x")));
+    body.querySelectorAll(".ttb").forEach(b => b.addEventListener("click", () => toggleTithe(b.dataset.m, +b.dataset.i)));
     body.querySelectorAll(".inc").forEach(b => b.addEventListener("click", () => {
       const m = S.months.find(x => x.id === b.dataset.m);
       const row = m && m.rows[+b.dataset.i];
@@ -915,7 +927,7 @@ function renderMonths(){
   el.innerHTML = S.months.map(m => {
     const t = totals(m.rows, S.rules);
     return `<button class="mtab" role="tab" aria-selected="${m.id===S.cur && !S.all}" data-id="${m.id}">
-      ${esc(m.label)}<small>${money(t.owed)}</small></button>`;
+      ${esc(m.label)}<small>${isPaidUp(m.key) ? "paid up" : money(t.owed)}</small></button>`;
   }).join("");
   el.querySelectorAll(".mtab").forEach(b =>
     b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
@@ -930,7 +942,9 @@ async function setFlag(monthId, i, flag, value){
   // Leaving out and counting by hand are opposites, so setting one clears the
   // other. A category code is a separate question and clears nothing.
   const pair = flag === "x" ? "i" : flag === "i" ? "x" : null;
-  const rows = m.rows.map((r,k) => k === i ? {...r, [flag]: next, ...(pair && next ? {[pair]: 0} : {})} : r);
+  // Putting a row back in also drops its tithe mark: it is counted again.
+  const rows = m.rows.map((r,k) => k === i ? {...r, [flag]: next, ...(pair && next ? {[pair]: 0} : {}),
+    ...(flag === "x" && !next ? {tt: 0} : {})} : r);
   m.rows = rows;
   render();
   try { await api("/months/" + monthId, {method:"PUT", body:{label:m.label, rows}}); }
@@ -943,7 +957,8 @@ async function setFlag(monthId, i, flag, value){
 /** The one control on each row. What it offers depends on what the row is doing. */
 function rowControl(r, c){
   const at = `data-m="${r._id}" data-i="${r._i}"`;
-  if (r.x) return `<button class="tog" ${at} aria-pressed="true" title="Put this back in">✕</button>`;
+  if (r.x) return `<div class="rctl"><button class="tog" ${at} aria-pressed="true" title="Put this back in">✕</button>
+    <button class="ttb" ${at} aria-pressed="${r.tt ? "true" : "false"}" title="${r.tt ? "Not a tithe, just left out" : "This was a tithe"}">${r.tt ? "Tithe ✓" : "Tithe?"}</button></div>`;
   if (r.i) return `<button class="inc on" ${at} title="Stop counting this">✓</button>`;
   if (c.f) return `<button class="tog" ${at} aria-pressed="false" title="Leave this one out"></button>`;
   return `<button class="inc" ${at} title="Count this one">+</button>`;
@@ -2274,8 +2289,11 @@ function checkNo(row){
 const rowYmd = (key, d) => key.slice(0,4) + "-" + d.slice(0,2) + "-" + d.slice(3,5);
 
 /** Every month added up: owed, paid, and what is left. */
+const isPaidUp = key => (S.paidUp || []).includes(key);
+
 function titheTotals(){
-  const owed = S.months.reduce((n,m) => n + totals(m.rows, S.rules).owed, 0);
+  // A month he marked paid up is settled: its owed is cleared, not counted.
+  const owed = S.months.reduce((n,m) => isPaidUp(m.key) ? n : n + totals(m.rows, S.rules).owed, 0);
   // A payment can carry a gift: the part he gave on top, which he chose not to
   // credit toward later months. Only the rest comes off what is owed.
   let paid = 0, gift = 0;
@@ -2330,12 +2348,57 @@ function findCheck(no){
 async function savePays(next){
   const before = S.pays;
   S.pays = next;
-  try { await api("/config/payments", {method:"PUT", body:{payments:{list:next}}}); return true; }
+  try { await api("/config/payments", {method:"PUT", body:{payments:{list:next, paidUp:S.paidUp || []}}}); return true; }
   catch(e){
     S.pays = before;
     if (e.message !== "Locked") alert("That payment didn't save. " + e.message);
     return false;
   }
+}
+
+/** Mark a month paid up, or open it again. Rides in the same setting as the payments. */
+async function setPaidUp(key, on){
+  const before = S.paidUp || [];
+  S.paidUp = on ? [...before.filter(k => k !== key), key].sort() : before.filter(k => k !== key);
+  render();
+  try { await api("/config/payments", {method:"PUT", body:{payments:{list:S.pays, paidUp:S.paidUp}}}); }
+  catch(e){
+    S.paidUp = before; render();
+    if (e.message !== "Locked") alert("That didn't save. " + e.message);
+  }
+}
+
+/** One bank row, named well enough to find it again after the month is re-pasted. */
+const rowSig = (key, r) => [key, r.d, r.a, r.c].join("|");
+
+/**
+ * The second button on a left-out row: this one was a tithe, not just left out.
+ * In an open month it is also recorded as a payment, so it comes off what is
+ * owed. In a paid-up month it is only a label, the month is already settled.
+ */
+async function toggleTithe(monthId, i){
+  const m = S.months.find(x => x.id === monthId);
+  const r = m && m.rows[i];
+  if (!r) return;
+  const sig = rowSig(m.key, r), no = checkNo(r);
+  const linked = S.pays.filter(p => p.row === sig || (no && String(p.check || "") === no));
+  if (r.tt){
+    if (linked.length){
+      if (!confirm("Take this off as a tithe? The " + money(linked.reduce((n,p) => n + (Number(p.amount) || 0), 0)) +
+          " payment recorded for it comes off too.")) return;
+      if (!await savePays(S.pays.filter(p => !linked.includes(p)))) return;
+    }
+    return setFlag(monthId, i, "tt", 0);
+  }
+  if (!isPaidUp(m.key) && !linked.length){
+    const amount = Math.round(Math.abs(Number(r.a) || 0) * 100) / 100;
+    const gift = await askExtra(amount);
+    if (gift === null) return;
+    const ok = await recordPays([{id:Date.now(), date:rowYmd(m.key, r.d), amount, check:no, row:sig,
+      src:"ledger", ...(gift ? {gift} : {})}]);
+    if (!ok) return;
+  }
+  return setFlag(monthId, i, "tt", 1);
 }
 
 /**
@@ -2349,8 +2412,8 @@ async function recordPays(list){
   const touched = new Set();
   for (const p of list){
     const hit = findCheck(p.check);
-    if (hit && !hit.row.x){
-      hit.m.rows = hit.m.rows.map((r,k) => k === hit.i ? {...r, x:1, i:0} : r);
+    if (hit && !(hit.row.x && hit.row.tt)){
+      hit.m.rows = hit.m.rows.map((r,k) => k === hit.i ? {...r, x:1, i:0, tt:1} : r);
       touched.add(hit.m);
     }
   }
@@ -2369,7 +2432,8 @@ async function recordPays(list){
 function unrecordedChecks(){
   const have = new Set(S.pays.map(p => String(p.check || "")).filter(Boolean));
   const out = [];
-  for (const m of S.months)
+  // A paid-up month is settled, so its cheques are not offered again.
+  for (const m of S.months.filter(x => !isPaidUp(x.key)))
     m.rows.forEach(r => {
       const no = checkNo(r);
       if (no && r.x && !have.has(no))
@@ -2445,7 +2509,7 @@ function renderTithes(){
       <div class="cell owed">
         <div class="k">Tithes ${leftLabel(T.left).toLowerCase()}</div>
         <div class="v num">${money(Math.abs(T.left))}</div>
-        <div class="sub">${money(T.owed)} owed across ${S.months.length} months, less ${money(T.paid)} paid${T.gift ? `, plus ${money(T.gift)} given as gifts` : ""}</div>
+        <div class="sub">${money(T.owed)} owed across ${S.months.filter(m => !isPaidUp(m.key)).length} open months, less ${money(T.paid)} paid${T.gift ? `, plus ${money(T.gift)} given as gifts` : ""}</div>
       </div>
       <div class="cell"><div class="k">Owed</div><div class="v num">${money(T.owed)}</div></div>
       <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div>${T.gift ? `<div class="sub">+ ${money(T.gift)} gifts</div>` : ""}</div>
@@ -2465,6 +2529,18 @@ function renderTithes(){
           <td style="text-align:right"><button class="btn" data-rec="${k}">Record</button></td></tr>`).join("")}
         </tbody></table></div>
       ${bulk.length > 1 ? `<div class="pfoot" style="justify-content:flex-start"><button class="btn" id="recAll">Record all ${bulk.length}, ${money(bulk.reduce((n,c) => n + c.amount, 0))}</button></div>` : ""}` : ""}
+
+    <div class="paysec">By month</div>
+    <p class="hint">A month you already settled, mark it paid up and its owed is cleared.</p>
+    <div class="scroll"><table class="fctab">
+      <thead><tr><th>Month</th><th class="r-amt">Owed</th><th></th></tr></thead>
+      <tbody>${S.months.map(m => {
+        const pu = isPaidUp(m.key);
+        return `<tr>
+          <td>${esc(m.label)}</td>
+          <td class="r-amt num">${pu ? `<span class="why" style="text-decoration:line-through">${money(totals(m.rows, S.rules).owed)}</span>` : money(totals(m.rows, S.rules).owed)}</td>
+          <td style="text-align:right"><button class="ttb" data-pu="${esc(m.key)}" aria-pressed="${pu}">${pu ? "Paid up ✓" : "Mark paid up"}</button></td></tr>`;
+      }).join("")}</tbody></table></div>
 
     <div class="paysec">History</div>
     ${hist.length ? `<div class="scroll"><table class="fctab">
@@ -2497,6 +2573,8 @@ function renderTithes(){
     await recordPays(bulk.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, src:"statement"})));
     S.payMsg = ""; render();
   });
+  main.querySelectorAll("[data-pu]").forEach(b => b.addEventListener("click", () =>
+    setPaidUp(b.dataset.pu, !isPaidUp(b.dataset.pu))));
   main.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     const p = S.pays.find(x => String(x.id) === b.dataset.del);
     if (!p || !confirm("Remove " + money(Number(p.amount) || 0) + (p.check ? ", check " + p.check : "") + "?")) return;
@@ -2574,14 +2652,14 @@ $("#btnPaste").addEventListener("click", () => {
       const btn = out.querySelector("#save");
       btn.disabled = true; btn.textContent = "Saving\u2026";
       const tithes = checks.filter((c,k) => c.known || out.querySelector(`[data-ck="${k}"]`).checked);
-      tithes.forEach(c => { c.row.x = 1; c.row.i = 0; });
+      tithes.forEach(c => { c.row.x = 1; c.row.i = 0; c.row.tt = 1; });
       const fresh = tithes.filter(c => !c.known);
       try {
         await api("/months/" + key, {method:"PUT", body:{label, rows}});
         if (fresh.length){
           const t = Date.now();
           const next = [...S.pays, ...fresh.map((c,k) => ({id:t + k, date:rowYmd(key, c.row.d), amount:c.amount, check:c.check, src:"statement"}))];
-          await api("/config/payments", {method:"PUT", body:{payments:{list:next}}});
+          await api("/config/payments", {method:"PUT", body:{payments:{list:next, paidUp:S.paidUp}}});
         }
         await loadAll();
       } catch(ex){
