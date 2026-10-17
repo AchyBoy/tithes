@@ -2321,6 +2321,14 @@ const paidFor = key => S.pays.reduce((n,p) => {
     + (p.creditTo === key ? c : 0);
 }, 0);
 
+/** How a month reads in the For month picker: paid, or what it still owes. */
+const monthState = key => {
+  if (isPaidUp(key)) return " \u2713 paid up";
+  const left = monthLeft(key);
+  if (left <= 0.005) return paidFor(key) > 0.005 ? " \u2713 paid" : "";
+  return " \u00b7 " + money(left) + " left";
+};
+
 /** What one saved month still owes after the payments toward it. */
 const monthLeft = key => {
   const m = S.months.find(x => x.key === key);
@@ -2546,7 +2554,7 @@ function payFormHtml(heading, pre){
   const date = pre.date || todayYmdStr();
   const month = pre.month || defaultPayMonth(date);
   const opts = S.months.slice().sort((a,b) => b.key.localeCompare(a.key)).map(m =>
-    `<option value="${esc(m.key)}" ${m.key === month ? "selected" : ""}>${esc(m.label)}${isPaidUp(m.key) ? " ✓ paid" : ""}</option>`).join("");
+    `<option value="${esc(m.key)}" ${m.key === month ? "selected" : ""}>${esc(m.label)}${monthState(m.key)}</option>`).join("");
   return `<form class="payform" id="payform" autocomplete="off">
       ${heading ? "<h3>Record a tithe payment</h3>" : ""}
       <div><label for="pamt">Amount</label><input id="pamt" inputmode="decimal" placeholder="$" required value="${pre.amount ? esc(pre.amount.toFixed(2)) : ""}"></div>
