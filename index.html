@@ -192,6 +192,8 @@ tr.look td{background:var(--look-soft)}
 .inc:hover{background:var(--accent-soft); border-color:var(--accent)}
 .inc.on{background:var(--accent); border-color:var(--accent); color:#fff}
 .rctl{display:flex; gap:5px; align-items:center}
+.tnotes{width:100%; min-height:120px; box-sizing:border-box; padding:12px; border-radius:10px;
+  border:1px solid var(--line); background:var(--surface); color:var(--ink); font:inherit; font-size:16px; resize:vertical}
 .ttb{
   height:27px; border-radius:7px; border:1.5px solid var(--accent-line); background:var(--surface);
   color:var(--accent); font-size:11.5px; font-weight:600; padding:0 7px; white-space:nowrap;
@@ -627,6 +629,7 @@ async function loadAll(){
   S.pays = pv.list || [];
   // Months he has already settled outside this page. Their owed is cleared.
   S.paidUp = Array.isArray(pv.paidUp) ? pv.paidUp : [];
+  S.notes = typeof pv.notes === "string" ? pv.notes : "";
   S.reg = {};
   ((rg && rg.cheques) || []).forEach(c => { S.reg[c.num] = c; });
   const names = (nm && nm.names) || {};
@@ -823,7 +826,7 @@ function render(){
         <div class="v num">${money(Math.abs(titheTotals().left))}</div>
         <div class="sub">${money(titheTotals().owed)} owed, less ${money(titheTotals().paid)} paid</div>` : (() => {
           const mp = paidFor(m.key), left = t.owed - mp;
-          return `<div class="k">${isPaidUp(m.key) ? "Tithes &middot; paid up" : mp ? "Tithes " + leftLabel(left).toLowerCase() : "Tithes owed"}</div>
+          return `<div class="k">${isPaidUp(m.key) ? "Tithes &middot; paid up" : mp && Math.abs(left) < 0.005 ? "Tithes &middot; paid" : mp ? "Tithes " + leftLabel(left).toLowerCase() : "Tithes owed"}</div>
         <div class="v num">${money(isPaidUp(m.key) ? 0 : Math.abs(left))}</div>
         <div class="sub">10% of ${money(t.base)} is ${money(t.owed)}${mp ? `, less ${money(mp)} paid` : ""}</div>
         <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b></div>`;
@@ -932,7 +935,7 @@ function renderMonths(){
   el.innerHTML = S.months.map(m => {
     const t = totals(m.rows, S.rules);
     return `<button class="mtab" role="tab" aria-selected="${m.id===S.cur && !S.all}" data-id="${m.id}">
-      ${esc(m.label)}<small>${isPaidUp(m.key) ? "paid up" : paidFor(m.key) && t.owed - paidFor(m.key) < 0.005 ? "ahead " + money(paidFor(m.key) - t.owed) : money(t.owed - paidFor(m.key))}</small></button>`;
+      ${esc(m.label)}<small>${isPaidUp(m.key) ? "paid up" : paidFor(m.key) && Math.abs(t.owed - paidFor(m.key)) < 0.005 ? "paid" : paidFor(m.key) && t.owed - paidFor(m.key) < 0 ? "ahead " + money(paidFor(m.key) - t.owed) : money(t.owed - paidFor(m.key))}</small></button>`;
   }).join("");
   el.querySelectorAll(".mtab").forEach(b =>
     b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
@@ -2303,8 +2306,25 @@ const isPaidUp = key => (S.paidUp || []).includes(key);
 const payMonth = p => p.month || (p.row ? String(p.row).split("|")[0] : String(p.date || "").slice(0,7));
 
 /** What came off one month's tithe. A gift never does. */
-const paidFor = key => S.pays.reduce((n,p) => payMonth(p) !== key ? n
-  : n + (Number(p.amount) || 0) - Math.min(Number(p.amount) || 0, Number(p.gift) || 0), 0);
+const paidFor = key => S.pays.reduce((n,p) => {
+  const a = Number(p.amount) || 0, g = Math.min(a, Number(p.gift) || 0), c = Math.min(a - g, Number(p.credit) || 0);
+  // Credit he carried forward comes off the month it was carried to instead.
+  return n + (payMonth(p) === key ? a - g - c : 0) + (p.creditTo === key ? c : 0);
+}, 0);
+
+const monthLabel = key => MONTHS[+key.slice(5,7) - 1] + " " + key.slice(2,4);
+
+/** The month after this one that is still open: a saved one if there is one, else the next on the calendar. */
+function nextMonthKey(key){
+  const saved = S.months.map(x => x.key).filter(k => k > key && !isPaidUp(k)).sort()[0];
+  if (saved) return saved;
+  let y = +key.slice(0,4), mo = +key.slice(5,7) + 1;
+  if (mo > 12){ mo = 1; y++; }
+  return y + "-" + String(mo).padStart(2,"0");
+}
+
+/** The one shape the payments setting is written in, so no write drops another's part. */
+const paymentsBody = list => ({payments:{list, paidUp:S.paidUp || [], notes:S.notes || ""}});
 
 function titheTotals(){
   // A month he marked paid up is settled: its owed is cleared, not counted.
@@ -2324,26 +2344,32 @@ const leftLabel = left => left < -0.005 ? "Ahead by" : "Still owed";
 
 /**
  * A payment bigger than what is still owed: ask what the extra is. Resolves to
- * the gift amount (0 when it is credit), or null if he backs out.
+ * the fields to put on the payment ({gift} or {credit, creditTo}, {} when there
+ * is no extra), or null if he backs out.
  */
-function askExtra(amount){
-  const left = titheTotals().left;
+function askExtra(amount, month){
+  // Paying toward one month: the extra is what is over that month's tithe.
+  const m = month && !isPaidUp(month) && S.months.find(x => x.key === month);
+  const left = m ? totals(m.rows, S.rules).owed - paidFor(m.key) : titheTotals().left;
   const extra = Math.round((amount - Math.max(left, 0)) * 100) / 100;
-  if (!(extra > 0.004)) return Promise.resolve(0);
+  if (!(extra > 0.004)) return Promise.resolve({});
+  const next = m ? nextMonthKey(m.key) : "";
+  const nextLabel = next ? (S.months.find(x => x.key === next) || {}).label || monthLabel(next) : "";
   return new Promise(resolve => {
     const s = panel("You paid " + money(extra) + " extra", `
       <p class="hint">${left > 0
-        ? `Still owed is ${money(left)} and this payment is ${money(amount)}.`
-        : `Nothing is owed right now, so all ${money(amount)} is on top.`}
+        ? `${m ? esc(m.label) + "&rsquo;s tithe" : "Still owed"} is ${money(left)} and this payment is ${money(amount)}.`
+        : `Nothing is owed${m ? " for " + esc(m.label) : " right now"}, so all ${money(amount)} is on top.`}
         What should the ${money(extra)} do?</p>
       <div class="pfoot" style="flex-direction:column; align-items:stretch; gap:10px">
-        <button class="btn primary" data-x="credit">Credit it forward, it comes off next month</button>
+        <button class="btn primary" data-x="credit">Credit it forward, it comes off ${next ? esc(nextLabel) : "next month"}</button>
         <button class="btn" data-x="gift">It&rsquo;s a gift, don&rsquo;t take it off later</button>
         <button class="btn" data-close>Cancel</button>
       </div>`);
     let done = false;
     s.querySelectorAll("[data-x]").forEach(b => b.addEventListener("click", () => {
-      done = true; s.remove(); resolve(b.dataset.x === "gift" ? extra : 0);
+      done = true; s.remove();
+      resolve(b.dataset.x === "gift" ? {gift:extra} : next ? {credit:extra, creditTo:next} : {});
     }));
     // Close, Cancel or a tap outside: nothing is recorded.
     new MutationObserver((_, o) => { if (!document.body.contains(s)){ o.disconnect(); if (!done) resolve(null); } })
@@ -2363,7 +2389,7 @@ function findCheck(no){
 async function savePays(next){
   const before = S.pays;
   S.pays = next;
-  try { await api("/config/payments", {method:"PUT", body:{payments:{list:next, paidUp:S.paidUp || []}}}); return true; }
+  try { await api("/config/payments", {method:"PUT", body:paymentsBody(next)}); return true; }
   catch(e){
     S.pays = before;
     if (e.message !== "Locked") alert("That payment didn't save. " + e.message);
@@ -2376,7 +2402,7 @@ async function setPaidUp(key, on){
   const before = S.paidUp || [];
   S.paidUp = on ? [...before.filter(k => k !== key), key].sort() : before.filter(k => k !== key);
   render();
-  try { await api("/config/payments", {method:"PUT", body:{payments:{list:S.pays, paidUp:S.paidUp}}}); }
+  try { await api("/config/payments", {method:"PUT", body:paymentsBody(S.pays)}); }
   catch(e){
     S.paidUp = before; render();
     if (e.message !== "Locked") alert("That didn't save. " + e.message);
@@ -2407,10 +2433,10 @@ async function toggleTithe(monthId, i){
   }
   if (!isPaidUp(m.key) && !linked.length){
     const amount = Math.round(Math.abs(Number(r.a) || 0) * 100) / 100;
-    const gift = await askExtra(amount);
-    if (gift === null) return;
+    const extra = await askExtra(amount, m.key);
+    if (extra === null) return;
     const ok = await recordPays([{id:Date.now(), date:rowYmd(m.key, r.d), amount, check:no, row:sig,
-      src:"ledger", ...(gift ? {gift} : {})}]);
+      src:"ledger", ...extra}]);
     if (!ok) return;
   }
   return setFlag(monthId, i, "tt", 1);
@@ -2493,10 +2519,11 @@ function wirePayForm(root, done, month){
     if (check && S.pays.some(p => String(p.check) === check)){
       if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
     }
-    const gift = await askExtra(amount);
-    if (gift === null) return;
+    const extra = await askExtra(amount, month || date.slice(0,7));
+    if (extra === null) return;
+    const gift = extra.gift;
     const btn = q("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
-    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...(month ? {month} : {}), ...(gift ? {gift} : {})}]);
+    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...(month ? {month} : {}), ...extra}]);
     if (!ok){ btn.disabled = false; btn.textContent = "Record"; return; }
     const hit = findCheck(check);
     done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}${gift ? ", " + money(gift) + " of it a gift" : ""}.` +
@@ -2566,21 +2593,24 @@ function renderTithes(){
         const hit = findCheck(p.check);
         return `<tr>
           <td>${prettyDay(p.date)}${(() => { const pm = S.months.find(x => x.key === payMonth(p)); return pm ? `<br><span class="why">for ${esc(pm.label)}</span>` : ""; })()}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
-          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}</td>
+          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}${p.credit && p.creditTo ? `<br><span class="why">${money(Number(p.credit))} to ${esc(monthLabel(p.creditTo))}</span>` : ""}</td>
           <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
       }).join("")}</tbody></table></div>`
     : `<p class="hint">Nothing recorded yet.</p>`}
+    <div class="paysec">Notes</div>
+    <textarea id="tnotes" class="tnotes" placeholder="Anything you want to remember">${esc(S.notes || "")}</textarea>
+    <p class="hint" id="tnsaved" style="min-height:1.2em"></p>
     <p class="note">What is owed is 10% of what counts toward the tithe, every saved month added up.
       When you paste a month, any cheque on it that you recorded here is found by its number and left out of that month automatically.</p>`;
 
   wirePayForm(main, msg => { S.payMsg = msg; render(); });
   main.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", async () => {
     const c = found[+b.dataset.rec];
-    const gift = await askExtra(c.amount);
-    if (gift === null) return;
+    const extra = await askExtra(c.amount, c.date.slice(0,7));
+    if (extra === null) return;
     b.disabled = true;
-    await recordPays([{id:Date.now(), date:c.date, amount:c.amount, check:c.check, src:"statement", ...(gift ? {gift} : {})}]);
+    await recordPays([{id:Date.now(), date:c.date, amount:c.amount, check:c.check, src:"statement", ...extra}]);
     S.payMsg = ""; render();
   }));
   const ra = $("#recAll");
@@ -2590,6 +2620,19 @@ function renderTithes(){
     await recordPays(bulk.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, src:"statement"})));
     S.payMsg = ""; render();
   });
+  // Notes save themselves a moment after he stops typing, and when he leaves the box.
+  const tn = $("#tnotes");
+  let tnTimer = null;
+  const saveNotes = async () => {
+    clearTimeout(tnTimer);
+    if (tn.value === (S.notes || "")) return;
+    const before = S.notes;
+    S.notes = tn.value;
+    try { await api("/config/payments", {method:"PUT", body:paymentsBody(S.pays)}); $("#tnsaved").textContent = "Saved"; }
+    catch(e){ S.notes = before; $("#tnsaved").textContent = "Didn\u2019t save. " + e.message; }
+  };
+  tn.addEventListener("input", () => { $("#tnsaved").textContent = ""; clearTimeout(tnTimer); tnTimer = setTimeout(saveNotes, 1200); });
+  tn.addEventListener("blur", saveNotes);
   main.querySelectorAll("[data-pu]").forEach(b => b.addEventListener("click", () =>
     setPaidUp(b.dataset.pu, !isPaidUp(b.dataset.pu))));
   main.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
@@ -2676,7 +2719,7 @@ $("#btnPaste").addEventListener("click", () => {
         if (fresh.length){
           const t = Date.now();
           const next = [...S.pays, ...fresh.map((c,k) => ({id:t + k, date:rowYmd(key, c.row.d), amount:c.amount, check:c.check, src:"statement"}))];
-          await api("/config/payments", {method:"PUT", body:{payments:{list:next, paidUp:S.paidUp}}});
+          await api("/config/payments", {method:"PUT", body:paymentsBody(next)});
         }
         await loadAll();
       } catch(ex){
