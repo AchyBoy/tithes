@@ -343,13 +343,15 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
 .why{font-size:11px; color:var(--ink-3)}
 .late{color:var(--park); font-weight:600}
 .bal{font-variant-numeric:tabular-nums; font-weight:600}
-.payform{display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px; align-items:end; margin:22px 0 18px}
+.payform{display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:10px; align-items:end; margin:22px 0 18px}
+.payform .pnote{grid-column:1/4}
+.payform select{width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--paper); color:var(--ink); font:inherit; font-size:16px}
 .payform h3{grid-column:1/-1; margin:0; font:600 15px/1.3 inherit; color:var(--ink)}
 .payform label{display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-3); font-weight:600; margin-bottom:6px}
 .payform input{width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--paper); color:var(--ink); font:inherit; font-size:16px}
 .payform input:focus{outline:none; border-color:var(--accent)}
 .payform .btn{padding:11px 16px}
-@media (max-width:560px){.payform{grid-template-columns:1fr 1fr} .payform .btn{grid-column:1/-1}}
+@media (max-width:560px){.payform{grid-template-columns:1fr 1fr} .payform .pnote,.payform .btn{grid-column:1/-1}}
 .ckb{display:inline-block; margin-left:6px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); background:var(--surface); color:var(--ink-2); font:600 11px/1.5 inherit; cursor:pointer; white-space:nowrap; vertical-align:1px}
 .ckb.crew{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
 .ckb.supplier{background:var(--park-soft); border-color:var(--park); color:var(--park)}
@@ -2434,15 +2436,12 @@ async function toggleTithe(monthId, i){
     }
     return setFlag(monthId, i, "tt", 0);
   }
-  if (!isPaidUp(m.key) && !linked.length){
-    const amount = Math.round(Math.abs(Number(r.a) || 0) * 100) / 100;
-    const extra = await askExtra(amount, m.key);
-    if (extra === null) return;
-    const ok = await recordPays([{id:Date.now(), date:rowYmd(m.key, r.d), amount, check:no, row:sig,
-      src:"ledger", ...extra}]);
-    if (!ok) return;
-  }
-  return setFlag(monthId, i, "tt", 1);
+  if (linked.length) return setFlag(monthId, i, "tt", 1);
+  // The same form as Record a payment, filled in from the row. He picks the
+  // month it pays toward: a cheque written in July is usually June's tithe.
+  const date = rowYmd(m.key, r.d);
+  payPanel({amount:Math.round(Math.abs(Number(r.a) || 0) * 100) / 100, check:no, date, row:sig, src:"ledger"},
+    async () => { const now = m.rows[i]; if (now && !now.tt) await setFlag(monthId, i, "tt", 1); });
 }
 
 /**
@@ -2496,20 +2495,47 @@ const todayYmdStr = () => {
   return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
 };
 
-/** The amount, check number and date form. One copy, used on the Tithes tab and from the Ledger card. */
-function payFormHtml(heading){
+/**
+ * The month a payment made on this day most likely pays: the saved month
+ * before it, since each month's tithe is paid the month after.
+ */
+function defaultPayMonth(ymdStr){
+  const k = String(ymdStr || "").slice(0,7);
+  const keys = S.months.map(x => x.key).sort();
+  return keys.filter(x => x < k).pop() || keys.filter(x => x <= k).pop() || keys[keys.length - 1] || "";
+}
+
+/**
+ * The payment form: amount, check #, date, which month it pays, and a note.
+ * One copy, used on the Tithes tab, from the Ledger card, and from a row.
+ */
+function payFormHtml(heading, pre){
+  pre = pre || {};
+  const date = pre.date || todayYmdStr();
+  const month = pre.month || defaultPayMonth(date);
+  const opts = S.months.slice().sort((a,b) => b.key.localeCompare(a.key)).map(m =>
+    `<option value="${esc(m.key)}" ${m.key === month ? "selected" : ""}>${esc(m.label)}${isPaidUp(m.key) ? " ✓ paid" : ""}</option>`).join("");
   return `<form class="payform" id="payform" autocomplete="off">
       ${heading ? "<h3>Record a tithe payment</h3>" : ""}
-      <div><label for="pamt">Amount</label><input id="pamt" inputmode="decimal" placeholder="$" required></div>
-      <div><label for="pchk">Check #</label><input id="pchk" inputmode="numeric" placeholder="#"></div>
-      <div><label for="pday">Date</label><input id="pday" type="date" value="${todayYmdStr()}"></div>
+      <div><label for="pamt">Amount</label><input id="pamt" inputmode="decimal" placeholder="$" required value="${pre.amount ? esc(pre.amount.toFixed(2)) : ""}"></div>
+      <div><label for="pchk">Check #</label><input id="pchk" inputmode="numeric" placeholder="#" value="${esc(pre.check || "")}"></div>
+      <div><label for="pday">Date</label><input id="pday" type="date" value="${esc(date)}"></div>
+      <div><label for="pmon">For month</label><select id="pmon">${opts}</select></div>
+      <div class="pnote"><label for="pnote">Note</label><input id="pnote" placeholder="Why, optional"></div>
       <button class="btn primary" type="submit">Record</button>
     </form>`;
 }
 
 /** Saves what was typed into the form under `root`, then hands back a line saying what happened. */
-function wirePayForm(root, done, month){
+function wirePayForm(root, done, fields){
   const q = sel => root.querySelector(sel);
+  fields = fields || {};
+  // A new date moves the month to the one before it, until he picks one himself.
+  let picked = false;
+  q("#pmon").addEventListener("change", () => { picked = true; });
+  q("#pday").addEventListener("change", () => {
+    if (!picked){ const k = defaultPayMonth(q("#pday").value); if (k) q("#pmon").value = k; }
+  });
   q("#payform").addEventListener("submit", async e => {
     e.preventDefault();
     const amount = Math.round(parseFloat(q("#pamt").value.replace(/[$,]/g,"")) * 100) / 100;
@@ -2522,24 +2548,37 @@ function wirePayForm(root, done, month){
     if (check && S.pays.some(p => String(p.check) === check)){
       if (!confirm("Check " + check + " is already recorded. Record it again?")) return;
     }
-    const extra = await askExtra(amount, month || date.slice(0,7));
-    if (extra === null) return;
+    const month = q("#pmon").value;
+    const note = q("#pnote").value.trim();
+    const mm = S.months.find(x => x.key === month);
+    // A payment toward a month marked paid up: that month is being paid for
+    // real now, so the mark comes off and its tithe is counted again.
+    const paidUpBefore = S.paidUp || [];
+    if (mm && isPaidUp(month)){
+      if (!confirm(mm.label + " is marked paid up. Record this toward it? The paid up mark comes off, so " +
+          mm.label + "\u2019s " + money(totals(mm.rows, S.rules).owed) + " is counted and this payment comes off it.")) return;
+      S.paidUp = paidUpBefore.filter(k => k !== month);
+    }
+    const extra = await askExtra(amount, month);
+    if (extra === null){ S.paidUp = paidUpBefore; return; }
     const gift = extra.gift;
     const btn = q("#payform button"); btn.disabled = true; btn.textContent = "Saving\u2026";
-    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...(month ? {month} : {}), ...extra}]);
-    if (!ok){ btn.disabled = false; btn.textContent = "Record"; return; }
+    const ok = await recordPays([{id:Date.now(), date, amount, check, src:"typed", ...fields, month, ...(note ? {note} : {}), ...extra}]);
+    if (!ok){ S.paidUp = paidUpBefore; btn.disabled = false; btn.textContent = "Record"; return; }
     const hit = findCheck(check);
-    done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}${gift ? ", " + money(gift) + " of it a gift" : ""}.` +
+    await done(`Recorded ${money(amount)}${check ? ", check " + esc(check) : ""}${mm ? " for " + esc(mm.label) : ""}${gift ? ", " + money(gift) + " of it a gift" : ""}.` +
       (hit ? ` Found it on ${esc(hit.m.label)} and left it out of that month.` : ""));
   });
 }
 
-function payPanel(){
-  // From a month's card it pays toward that month.
-  const m = !S.all && S.view === "ledger" && S.months.find(x => x.id === S.cur);
-  const s = panel(m ? "Record a tithe payment for " + m.label : "Record a tithe payment", payFormHtml(false));
-  wirePayForm(s, msg => { s.remove(); S.payMsg = msg; render(); }, m ? m.key : "");
-  setTimeout(() => { const a = s.querySelector("#pamt"); if (a) a.focus(); }, 50);
+/** The payment form in a panel. `pre` fills it in (from a row or a statement cheque); `after` runs once it saved. */
+function payPanel(pre, after){
+  pre = (pre && pre.amount) ? pre : {};
+  const {row, src} = pre;
+  const s = panel("Record a tithe payment", payFormHtml(false, pre));
+  wirePayForm(s, async msg => { s.remove(); if (after) await after(); S.payMsg = msg; render(); },
+    {...(row ? {row} : {}), ...(src ? {src} : {})});
+  if (!pre.amount) setTimeout(() => { const a = s.querySelector("#pamt"); if (a) a.focus(); }, 50);
 }
 
 function renderTithes(){
@@ -2561,10 +2600,6 @@ function renderTithes(){
       <div class="cell"><div class="k">Owed</div><div class="v num">${money(T.owed)}</div></div>
       <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div>${T.gift ? `<div class="sub">+ ${money(T.gift)} gifts</div>` : ""}</div>
     </section>
-
-    <div class="paysec" style="margin-top:18px">Notes</div>
-    <textarea id="tnotes" class="tnotes" placeholder="Anything you want to remember">${esc(S.notes || "")}</textarea>
-    <p class="hint" id="tnsaved" style="min-height:1.2em"></p>
 
     ${payFormHtml(true)}
     ${S.payMsg ? `<p class="paymsg">${S.payMsg}</p>` : ""}
@@ -2600,7 +2635,7 @@ function renderTithes(){
         const hit = findCheck(p.check);
         return `<tr>
           <td>${prettyDay(p.date)}${(() => { const pm = S.months.find(x => x.key === payMonth(p)); return pm ? `<br><span class="why">for ${esc(pm.label)}</span>` : ""; })()}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
-          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}${p.credit && p.creditTo ? `<br><span class="why">${money(Number(p.credit))} to ${esc(monthLabel(p.creditTo))}</span>` : ""}</td>
+          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}${p.credit && p.creditTo ? `<br><span class="why">${money(Number(p.credit))} to ${esc(monthLabel(p.creditTo))}</span>` : ""}${p.note ? `<br><span class="why">${esc(p.note)}</span>` : ""}</td>
           <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
       }).join("")}</tbody></table></div>`
@@ -2611,32 +2646,15 @@ function renderTithes(){
   wirePayForm(main, msg => { S.payMsg = msg; render(); });
   main.querySelectorAll("[data-rec]").forEach(b => b.addEventListener("click", async () => {
     const c = found[+b.dataset.rec];
-    const extra = await askExtra(c.amount, c.date.slice(0,7));
-    if (extra === null) return;
-    b.disabled = true;
-    await recordPays([{id:Date.now(), date:c.date, amount:c.amount, check:c.check, src:"statement", ...extra}]);
-    S.payMsg = ""; render();
+    payPanel({amount:c.amount, check:c.check, date:c.date, src:"statement"});
   }));
   const ra = $("#recAll");
   if (ra) ra.addEventListener("click", async () => {
     ra.disabled = true;
     const t = Date.now();
-    await recordPays(bulk.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, src:"statement"})));
+    await recordPays(bulk.map((c,k) => ({id:t + k, date:c.date, amount:c.amount, check:c.check, month:defaultPayMonth(c.date), src:"statement"})));
     S.payMsg = ""; render();
   });
-  // Notes save themselves a moment after he stops typing, and when he leaves the box.
-  const tn = $("#tnotes");
-  let tnTimer = null;
-  const saveNotes = async () => {
-    clearTimeout(tnTimer);
-    if (tn.value === (S.notes || "")) return;
-    const before = S.notes;
-    S.notes = tn.value;
-    try { await api("/config/payments", {method:"PUT", body:paymentsBody(S.pays)}); $("#tnsaved").textContent = "Saved"; }
-    catch(e){ S.notes = before; $("#tnsaved").textContent = "Didn\u2019t save. " + e.message; }
-  };
-  tn.addEventListener("input", () => { $("#tnsaved").textContent = ""; clearTimeout(tnTimer); tnTimer = setTimeout(saveNotes, 1200); });
-  tn.addEventListener("blur", saveNotes);
   main.querySelectorAll("[data-pu]").forEach(b => b.addEventListener("click", () =>
     setPaidUp(b.dataset.pu, !isPaidUp(b.dataset.pu))));
   main.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
@@ -2722,7 +2740,7 @@ $("#btnPaste").addEventListener("click", () => {
         await api("/months/" + key, {method:"PUT", body:{label, rows}});
         if (fresh.length){
           const t = Date.now();
-          const next = [...S.pays, ...fresh.map((c,k) => ({id:t + k, date:rowYmd(key, c.row.d), amount:c.amount, check:c.check, src:"statement"}))];
+          const next = [...S.pays, ...fresh.map((c,k) => ({id:t + k, date:rowYmd(key, c.row.d), amount:c.amount, check:c.check, month:defaultPayMonth(rowYmd(key, c.row.d)), src:"statement"}))];
           await api("/config/payments", {method:"PUT", body:paymentsBody(next)});
         }
         await loadAll();
