@@ -100,6 +100,7 @@ h1 em{font-style:italic; color:var(--accent)}
 .mtab:hover{color:var(--ink)}
 .mtab[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--accent)}
 .mtab small{display:block; font-size:11px; font-weight:400; color:var(--ink-3); letter-spacing:.02em}
+.mtab small.mst{color:var(--accent); font-weight:600}
 
 /* ---------- summary ---------- */
 .summary{
@@ -829,7 +830,7 @@ function render(){
         <div class="sub">${money(titheTotals().owed)} owed, less ${money(titheTotals().paid)} paid</div>` : (() => {
           const mp = paidFor(m.key), left = t.owed - mp;
           return `<div class="k">${isPaidUp(m.key) ? "Tithes &middot; paid up" : mp && Math.abs(left) < 0.005 ? "Tithes &middot; paid" : mp ? "Tithes " + leftLabel(left).toLowerCase() : "Tithes owed"}</div>
-        <div class="v num">${money(isPaidUp(m.key) ? 0 : Math.abs(left))}</div>
+        <div class="v num">${money(isPaidUp(m.key) ? 0 : mp ? Math.abs(left) : t.owed)}</div>
         <div class="sub">10% of ${money(t.base)} is ${money(t.owed)}${mp ? `, less ${money(mp)} paid` : ""}</div>
         <div class="sub" style="margin-top:10px">${leftLabel(titheTotals().left)}, all months: <b>${money(Math.abs(titheTotals().left))}</b></div>`;
         })()}
@@ -937,7 +938,13 @@ function renderMonths(){
   el.innerHTML = S.months.map(m => {
     const t = totals(m.rows, S.rules);
     return `<button class="mtab" role="tab" aria-selected="${m.id===S.cur && !S.all}" data-id="${m.id}">
-      ${esc(m.label)}<small>${isPaidUp(m.key) ? "paid up" : paidFor(m.key) && Math.abs(t.owed - paidFor(m.key)) < 0.005 ? "paid" : paidFor(m.key) && t.owed - paidFor(m.key) < 0 ? "ahead " + money(paidFor(m.key) - t.owed) : money(t.owed - paidFor(m.key))}</small></button>`;
+      ${esc(m.label)}<small>${money(t.owed)}</small>${(() => {
+        // The tithe as figured, then where payments left it.
+        const pd = paidFor(m.key), left = t.owed - pd;
+        const st = isPaidUp(m.key) ? "paid up" : !pd ? "" : Math.abs(left) < 0.005 ? "paid"
+          : left < 0 ? "ahead " + money(-left) : money(left) + " left";
+        return st ? `<small class="mst">${st}</small>` : "";
+      })()}</button>`;
   }).join("");
   el.querySelectorAll(".mtab").forEach(b =>
     b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
