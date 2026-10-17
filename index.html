@@ -2312,10 +2312,20 @@ const payMonth = p => p.month || (p.row ? String(p.row).split("|")[0] : String(p
 
 /** What came off one month's tithe. A gift never does. */
 const paidFor = key => S.pays.reduce((n,p) => {
-  const a = Number(p.amount) || 0, g = Math.min(a, Number(p.gift) || 0), c = Math.min(a - g, Number(p.credit) || 0);
-  // Credit he carried forward comes off the month it was carried to instead.
-  return n + (payMonth(p) === key ? a - g - c : 0) + (p.creditTo === key ? c : 0);
+  const a = Number(p.amount) || 0, g = Math.min(a, Number(p.gift) || 0);
+  // Extra he put toward later months comes off those months instead.
+  const al = (p.alloc || []).reduce((t,x) => t + (Number(x.a) || 0), 0);
+  const c = Math.min(Math.max(a - g - al, 0), Number(p.credit) || 0);
+  return n + (payMonth(p) === key ? a - g - al - c : 0)
+    + (p.alloc || []).reduce((t,x) => t + (x.m === key ? Number(x.a) || 0 : 0), 0)
+    + (p.creditTo === key ? c : 0);
 }, 0);
+
+/** What one saved month still owes after the payments toward it. */
+const monthLeft = key => {
+  const m = S.months.find(x => x.key === key);
+  return m ? totals(m.rows, S.rules).owed - paidFor(key) : 0;
+};
 
 const monthLabel = key => MONTHS[+key.slice(5,7) - 1] + " " + key.slice(2,4);
 
@@ -2355,27 +2365,49 @@ const leftLabel = left => left < -0.005 ? "Ahead by" : "Still owed";
 function askExtra(amount, month){
   // Paying toward one month: the extra is what is over that month's tithe.
   const m = month && !isPaidUp(month) && S.months.find(x => x.key === month);
-  const left = m ? totals(m.rows, S.rules).owed - paidFor(m.key) : titheTotals().left;
+  const left = m ? monthLeft(m.key) : titheTotals().left;
   const extra = Math.round((amount - Math.max(left, 0)) * 100) / 100;
   if (!(extra > 0.004)) return Promise.resolve({});
-  const next = m ? nextMonthKey(m.key) : "";
-  const nextLabel = next ? (S.months.find(x => x.key === next) || {}).label || monthLabel(next) : "";
+  // The extra walks forward a month at a time: each month after this one that
+  // still owes is offered in turn until it is used up, or he gifts the rest.
+  const alloc = [];
+  let rest = extra, cursor = m ? m.key : "";
+  const nextOwing = () => m ? S.months.map(x => x.key).sort()
+    .find(k => k > cursor && !isPaidUp(k) && monthLeft(k) > 0.005) : "";
+  const lastSaved = S.months.map(x => x.key).sort().pop() || "";
+  const after = lastSaved ? monthLabel(nextMonthKey(lastSaved)) : "next month";
   return new Promise(resolve => {
-    const s = panel("You paid " + money(extra) + " extra", `
-      <p class="hint">${left > 0
-        ? `${m ? esc(m.label) + "&rsquo;s tithe" : "Still owed"} is ${money(left)} and this payment is ${money(amount)}.`
-        : `Nothing is owed${m ? " for " + esc(m.label) : " right now"}, so all ${money(amount)} is on top.`}
-        What should the ${money(extra)} do?</p>
-      <div class="pfoot" style="flex-direction:column; align-items:stretch; gap:10px">
-        <button class="btn primary" data-x="credit">Credit it forward, it comes off ${next ? esc(nextLabel) : "next month"}</button>
-        <button class="btn" data-x="gift">It&rsquo;s a gift, don&rsquo;t take it off later</button>
-        <button class="btn" data-close>Cancel</button>
-      </div>`);
+    const s = panel("You paid " + money(extra) + " extra", `<div id="xbody"></div>`);
+    const body = s.querySelector("#xbody");
     let done = false;
-    s.querySelectorAll("[data-x]").forEach(b => b.addEventListener("click", () => {
-      done = true; s.remove();
-      resolve(b.dataset.x === "gift" ? {gift:extra} : next ? {credit:extra, creditTo:next} : {});
-    }));
+    const finish = r => { done = true; s.remove(); resolve(r); };
+    const draw = () => {
+      const nx = nextOwing(), nl = nx ? monthLeft(nx) : 0;
+      const take = Math.round(Math.min(rest, nl) * 100) / 100, lbl = nx ? S.months.find(x => x.key === nx).label : "";
+      body.innerHTML = `
+        <p class="hint">${alloc.length
+          ? alloc.map(a => `${money(a.a)} went to ${esc(monthLabel(a.m))}.`).join(" ") + ` ${money(rest)} is still left over.`
+          : m ? `${esc(m.label)}&rsquo;s tithe ${left > 0 ? "is " + money(left) : "is already paid"} and this payment is ${money(amount)}, so ${money(rest)} is left over.`
+              : `Still owed is ${money(Math.max(left, 0))} and this payment is ${money(amount)}.`}
+          ${nx ? `${esc(lbl)} still owes ${money(nl)}.` : m ? `Every month after ${esc(monthLabel(cursor))} is paid.` : ""}</p>
+        <div class="pfoot" style="flex-direction:column; align-items:stretch; gap:10px">
+          ${nx ? `<button class="btn primary" data-x="apply">Put ${money(take)} toward ${esc(lbl)}</button>`
+               : `<button class="btn primary" data-x="hold">Hold ${money(rest)} as credit, it comes off ${esc(after)}</button>`}
+          <button class="btn" data-x="gift">${alloc.length ? "Gift the " + money(rest) + " left" : "It&rsquo;s a gift, don&rsquo;t take it off later"}</button>
+          <button class="btn" data-close>Cancel</button>
+        </div>`;
+      body.querySelectorAll("[data-x]").forEach(b => b.addEventListener("click", () => {
+        const x = b.dataset.x, out = alloc.length ? {alloc:alloc.slice()} : {};
+        if (x === "gift") return finish({...out, gift:rest});
+        if (x === "hold") return finish(lastSaved ? {...out, credit:rest, creditTo:nextMonthKey(lastSaved)} : out);
+        alloc.push({m:nx, a:take});
+        rest = Math.round((rest - take) * 100) / 100;
+        cursor = nx;
+        if (rest <= 0.004) return finish({alloc:alloc.slice()});
+        draw();
+      }));
+    };
+    draw();
     // Close, Cancel or a tap outside: nothing is recorded.
     new MutationObserver((_, o) => { if (!document.body.contains(s)){ o.disconnect(); if (!done) resolve(null); } })
       .observe(document.body, {childList:true});
@@ -2635,7 +2667,7 @@ function renderTithes(){
         const hit = findCheck(p.check);
         return `<tr>
           <td>${prettyDay(p.date)}${(() => { const pm = S.months.find(x => x.key === payMonth(p)); return pm ? `<br><span class="why">for ${esc(pm.label)}</span>` : ""; })()}</td><td class="num">${esc(p.check || "")}${chkBadge(p.check, p.amount)}</td>
-          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}${p.credit && p.creditTo ? `<br><span class="why">${money(Number(p.credit))} to ${esc(monthLabel(p.creditTo))}</span>` : ""}${p.note ? `<br><span class="why">${esc(p.note)}</span>` : ""}</td>
+          <td class="r-amt num">${money(Number(p.amount) || 0)}${p.gift ? `<br><span class="why">${money(Number(p.gift))} gift</span>` : ""}${p.credit && p.creditTo ? `<br><span class="why">${money(Number(p.credit))} to ${esc(monthLabel(p.creditTo))}</span>` : ""}${(p.alloc || []).map(x => `<br><span class="why">${money(Number(x.a))} to ${esc(monthLabel(x.m))}</span>`).join("")}${p.note ? `<br><span class="why">${esc(p.note)}</span>` : ""}</td>
           <td class="why">${hit ? "on " + esc(hit.m.label) : p.check ? "not yet" : ""}</td>
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
       }).join("")}</tbody></table></div>`
