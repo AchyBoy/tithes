@@ -1215,7 +1215,10 @@ async function checkForUpdate(){
     try { already = sessionStorage.getItem("tl_reloaded"); } catch(e){}
     if (already === sig) return;             // tried this build already, never a loop
     try { sessionStorage.setItem("tl_reloaded", sig); localStorage.setItem("tl_build", sig); } catch(e){}
-    location.reload();
+    // A plain reload could be answered from the 10 minute page cache, which
+    // left him on the old build with the new one marked as seen. A new
+    // address cannot come from that cache.
+    location.replace(location.pathname + "?v=" + encodeURIComponent(sig) + location.hash);
   } catch(e){}
 }
 
@@ -2559,6 +2562,10 @@ function renderTithes(){
       <div class="cell"><div class="k">Paid</div><div class="v num pos">${money(T.paid)}</div>${T.gift ? `<div class="sub">+ ${money(T.gift)} gifts</div>` : ""}</div>
     </section>
 
+    <div class="paysec" style="margin-top:18px">Notes</div>
+    <textarea id="tnotes" class="tnotes" placeholder="Anything you want to remember">${esc(S.notes || "")}</textarea>
+    <p class="hint" id="tnsaved" style="min-height:1.2em"></p>
+
     ${payFormHtml(true)}
     ${S.payMsg ? `<p class="paymsg">${S.payMsg}</p>` : ""}
 
@@ -2598,9 +2605,6 @@ function renderTithes(){
           <td style="text-align:right"><button class="btn" data-del="${esc(p.id)}" aria-label="Remove">&times;</button></td></tr>`;
       }).join("")}</tbody></table></div>`
     : `<p class="hint">Nothing recorded yet.</p>`}
-    <div class="paysec">Notes</div>
-    <textarea id="tnotes" class="tnotes" placeholder="Anything you want to remember">${esc(S.notes || "")}</textarea>
-    <p class="hint" id="tnsaved" style="min-height:1.2em"></p>
     <p class="note">What is owed is 10% of what counts toward the tithe, every saved month added up.
       When you paste a month, any cheque on it that you recorded here is found by its number and left out of that month automatically.</p>`;
 
