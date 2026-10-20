@@ -783,8 +783,9 @@ function passwordPanel(){
   s.querySelector("#pwform").addEventListener("submit", async e => {
     e.preventDefault();
     const pw = s.querySelector("#np").value, err = s.querySelector("#perr");
-    if (pw.length < 4){ err.hidden = false; err.textContent = "Use at least four characters."; return; }
-    try { await api("/password", {method:"PUT", body:{password:pw}}); }
+    if (pw.length < 8){ err.hidden = false; err.textContent = "Use at least eight characters."; return; }
+    // A password change signs out every other session; this tab gets a fresh token.
+    try { const r = await api("/password", {method:"PUT", body:{password:pw}}); if (r && r.token) setToken(r.token); }
     catch(ex){ err.hidden = false; err.textContent = ex.message; return; }
     s.remove();
   });
