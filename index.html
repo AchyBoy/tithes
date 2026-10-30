@@ -356,6 +356,9 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
 .ckb{display:inline-block; margin-left:6px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); background:var(--surface); color:var(--ink-2); font:600 11px/1.5 inherit; cursor:pointer; white-space:nowrap; vertical-align:1px}
 .ckb.crew{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
 .ckb.supplier{background:var(--park-soft); border-color:var(--park); color:var(--park)}
+.ckb.voided{background:var(--warn); border-color:var(--warn); color:#fff}
+.voidalert{margin:0 0 14px; padding:12px 14px; border:2px solid var(--warn); border-radius:12px; color:var(--warn); background:var(--surface); font-size:14px; line-height:1.45}
+.voidalert b{font-weight:700}
 .ckpart{padding:12px 0; border-top:1px solid var(--line)}
 .ckpart:first-of-type{border-top:0}
 .ckpart .who{font-weight:600}
@@ -635,6 +638,8 @@ async function loadAll(){
   S.notes = typeof pv.notes === "string" ? pv.notes : "";
   S.reg = {};
   ((rg && rg.cheques) || []).forEach(c => { S.reg[c.num] = c; });
+  S.voided = {};
+  ((rg && rg.voided) || []).forEach(v => { S.voided[v.num] = v; });
   const names = (nm && nm.names) || {};
   ACH = Array.isArray(names.ach) ? names.ach : [];
   SUBS_DESC = Array.isArray(names.subs) ? names.subs : [];
@@ -798,6 +803,7 @@ function render(){
   document.querySelectorAll("[data-view]").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.view === S.view)));
   renderMonths();
+  voidAlert();
   const main = $("#main");
   if (S.offline && !S.months.length){
     main.innerHTML = '<div class="offline">Couldn&rsquo;t reach the ledger just now. Reload in a moment.</div>';
@@ -2260,14 +2266,71 @@ function regFor(no, amount){
 
 const KIND_LABEL = {crew:"Crew payment", supplier:"Material payment", mixed:"Crew + materials"};
 
+/**
+ * A cheque JobHub VOIDED, matched the same way as regFor, or null.
+ *
+ * 🔴 If one of these shows up on the statement, the same work was paid twice:
+ * 10-30 Marlo picked up Mario's $600 Woodlawn cheque 11984 by mistake, so it
+ * was voided and 11989 written instead. The bank never hears about a void.
+ */
+function voidedFor(no, amount){
+  no = String(no || "").replace(/^0+/, "");
+  if (!no || !S.voided) return null;
+  if (amount === undefined) return S.voided[no] || null;
+  const a = Math.abs(Number(amount) || 0);
+  return [S.voided[no], S.voided["1" + no]].find(v => v && Math.abs(v.amount - a) < 0.01) || null;
+}
+
+/** Every bank row, any month, that is a voided cheque clearing. */
+function voidedHits(){
+  const hits = [];
+  (S.months || []).forEach(m => (m.rows || []).forEach(r => {
+    const v = voidedFor(checkNo(r), r.a);
+    if (v) hits.push({v, m, r});
+  }));
+  return hits;
+}
+
+/** The red box at the top of every screen while a voided cheque has cleared. */
+function voidAlert(){
+  let box = $("#voidAlert");
+  const hits = voidedHits();
+  if (!hits.length){ if (box) box.remove(); return; }
+  if (!box){
+    box = document.createElement("div");
+    box.id = "voidAlert"; box.className = "voidalert"; box.setAttribute("role", "alert");
+    $("#main").before(box);
+  }
+  box.innerHTML = hits.map(({v, m, r}) => `<div><b>Voided check #${esc(v.num)} cleared the bank.</b>
+    ${money(v.amount)}${v.payee ? " to " + esc(v.payee) : ""}, on the ${esc(m.label || m.id)} statement (${esc(r.d || "")}).
+    It was voided${v.voided ? " " + prettyDay(v.voided) : ""}${v.reason ? ": " + esc(v.reason) : ""}${v.replacedBy ? ", and check #" + esc(v.replacedBy) + " was written instead" : ""}.
+    That is the same work paid twice. Call the bank and whoever cashed it.</div>`).join("");
+}
+
 /** The tappable badge, or "" when JobHub never wrote this cheque. */
 function chkBadge(no, amount){
+  const vd = voidedFor(no, amount);
+  if (vd) return `<button type="button" class="ckb voided" data-chk="${esc(vd.num)}" data-void="1">#${esc(vd.num)} &middot; VOIDED, paid twice?</button>`;
   const c = regFor(no, amount);
   return c ? `<button type="button" class="ckb ${c.kind}" data-chk="${esc(c.num)}">#${esc(c.num)} &middot; ${KIND_LABEL[c.kind] || "JobHub"}</button>` : "";
 }
 
 /** What one cheque paid for: who, which job and phase, and the PO for materials. */
-function chequePanel(num){
+function chequePanel(num, isVoid){
+  const v = isVoid && S.voided && S.voided[num];
+  if (v){
+    panel("Check #" + v.num + " \u00b7 VOIDED", `
+    <div class="readout">
+      <div class="row"><span>Amount</span><span><b>${money(v.amount)}</b></span></div>
+      ${v.payee ? `<div class="row"><span>To</span><span>${esc(v.payee)}</span></div>` : ""}
+      ${v.date ? `<div class="row"><span>Written</span><span>${prettyDay(v.date)}</span></div>` : ""}
+      ${v.voided ? `<div class="row"><span>Voided</span><span>${prettyDay(v.voided)}</span></div>` : ""}
+      ${v.reason ? `<div class="row"><span>Why</span><span>${esc(v.reason)}</span></div>` : ""}
+      ${v.replacedBy ? `<div class="row"><span>Replaced by</span><span>#${esc(v.replacedBy)}</span></div>` : ""}
+    </div>
+    <p class="bad">This check was voided in JobHub. If the bank paid it, the same work was paid twice.</p>`);
+    return;
+  }
   const c = S.reg[num];
   if (!c) return;
   panel("Check #" + c.num + " \u00b7 " + (KIND_LABEL[c.kind] || ""), `
@@ -2291,7 +2354,7 @@ document.addEventListener("click", e => {
   const b = e.target.closest && e.target.closest(".ckb");
   if (!b) return;
   e.preventDefault(); e.stopPropagation();
-  chequePanel(b.dataset.chk);
+  chequePanel(b.dataset.chk, b.dataset.void === "1");
 }, true);
 
 /* ============ Tithes: what he has paid, by cheque ============ */
