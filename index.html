@@ -1180,7 +1180,7 @@ function booksTotals(rows){
 }
 
 
-/* The Banks tab. Links the bank accounts through Teller and sends the CPA a
+/* The Banks tab. Links the bank accounts through Plaid and sends the CPA a
  * statement made from their transactions on the 5th of every month. Nothing
  * on this tab touches the ledger; the access tokens never come back down here. */
 const MONTHS_LONG = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -1200,13 +1200,13 @@ async function renderBanks(){
         <small style="color:var(--ink-3)">linked ${esc(x.linkedAt.slice(0,10))}</small>
         <button class="btn" style="padding:2px 8px;font-size:12px;margin-left:8px" data-unlink="${esc(x.id)}">Remove</button></li>`).join("")
     : '<li style="color:var(--ink-3)">No bank linked yet.</li>';
-  const ready = b.appId && b.certReady;
+  const ready = b.ready;
   main.innerHTML = `<div style="max-width:640px;padding:8px 2px">
     <h2 style="margin:0 0 6px">Banks</h2>
-    <p style="color:var(--ink-3);margin:0 0 12px">Linked through Teller, read only.</p>
+    <p style="color:var(--ink-3);margin:0 0 12px">Linked through Plaid, read only.</p>
     <ul style="padding-left:18px;margin:0 0 12px">${banks}</ul>
     <button class="btn primary" id="btnLink" ${ready ? "" : "disabled"}>Link a bank</button>
-    ${ready ? "" : '<p style="color:var(--park)">Teller isn&rsquo;t set up on the server yet.</p>'}
+    ${ready ? "" : '<p style="color:var(--park)">Plaid isn&rsquo;t set up on the server yet.</p>'}
 
     <h2 style="margin:28px 0 6px">CPA statements</h2>
     <p style="color:var(--ink-3);margin:0 0 12px">On the 5th of each month, one PDF per account for the month before,
@@ -1223,7 +1223,7 @@ async function renderBanks(){
 
   const msg = t => { $("#cpaMsg").textContent = t; };
   const reload = async () => { S.banks = null; render(); };
-  $("#btnLink").onclick = () => linkBank(b);
+  $("#btnLink").onclick = () => linkBank();
   main.querySelectorAll("[data-unlink]").forEach(x => x.onclick = async () => {
     if (!confirm("Remove this bank? Statements stop including it.")) return;
     try { await api("/banks/" + encodeURIComponent(x.dataset.unlink), {method:"DELETE"}); reload(); }
@@ -1244,22 +1244,23 @@ async function renderBanks(){
   };
 }
 
-function linkBank(b){
-  const open = () => TellerConnect.setup({
-    applicationId: b.appId,
-    environment: b.environment,
-    products: ["transactions", "balance"],
-    onSuccess: async (enrollment) => {
-      try { await api("/banks", {method:"POST", body: enrollment}); }
+async function linkBank(){
+  let linkToken;
+  try { linkToken = (await api("/banks/link-token", {method:"POST", body:{}})).linkToken; }
+  catch(e){ alert(e.message); return; }
+  const open = () => Plaid.create({
+    token: linkToken,
+    onSuccess: async (publicToken, meta) => {
+      try { await api("/banks", {method:"POST", body:{publicToken, institution: meta?.institution?.name || ""}}); }
       catch(e){ alert(e.message); }
       S.banks = null; render();
     },
   }).open();
-  if (window.TellerConnect) return open();
+  if (window.Plaid) return open();
   const sc = document.createElement("script");
-  sc.src = "https://cdn.teller.io/connect/connect.js";
+  sc.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
   sc.onload = open;
-  sc.onerror = () => alert("Couldn’t load Teller. Try again in a moment.");
+  sc.onerror = () => alert("Couldn’t load Plaid. Try again in a moment.");
   document.head.appendChild(sc);
 }
 
