@@ -1255,6 +1255,12 @@ async function linkBank(){
       catch(e){ alert(e.message); }
       S.banks = null; render();
     },
+    // Without this a failed link closes with no word at all and looks like it worked.
+    onExit: (err, meta) => {
+      if (err) alert("Plaid stopped: " + (err.display_message || err.error_message || err.error_code)
+        + (meta?.institution?.name ? " (" + meta.institution.name + ")" : "")
+        + "\n\nCode: " + err.error_code);
+    },
   }).open();
   if (window.Plaid) return open();
   const sc = document.createElement("script");
