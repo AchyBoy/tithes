@@ -292,6 +292,34 @@ textarea:focus{outline:none; border-color:var(--accent)}
   .summary{grid-template-columns:1fr 1fr}
   .owed{grid-column:1/-1}
 }
+/* The ledger is seven columns and 820px wide, which on a phone meant sideways
+   scrolling past the amount to reach the rule and buttons (11-02). Under 640px
+   every row becomes a card: description and amount, then date, type and what
+   counted, then the rule and the buttons. */
+@media (max-width:640px){
+  table.ledger{min-width:0}
+  table.ledger thead{display:none}
+  table.ledger, table.ledger tbody{display:block}
+  table.ledger tr{display:grid; grid-template-columns:auto 1fr auto; column-gap:10px; row-gap:4px;
+    grid-template-areas:"desc desc amt" "date type cnt" "tag tag ctl";
+    padding:11px 13px; border-bottom:1px solid var(--line-2)}
+  table.ledger td{display:block; padding:0; border:0; background:none!important}
+  table.ledger tr.parked, table.ledger tr.look, table.ledger tr.parked.tithe{background:var(--park-soft)}
+  table.ledger tr.look{background:var(--look-soft)}
+  table.ledger tr.parked.tithe{background:var(--accent-soft)}
+  table.ledger .r-desc{grid-area:desc; min-width:0; font-weight:500; overflow-wrap:anywhere}
+  table.ledger .r-amt{grid-area:amt; font-weight:600}
+  table.ledger .r-date{grid-area:date; font-size:12.5px}
+  table.ledger .r-type{grid-area:type; font-size:12.5px; white-space:normal}
+  table.ledger .r-cnt{grid-area:cnt; font-size:12.5px; color:var(--ink-3)}
+  table.ledger .r-cnt::before{content:"counts "; font-family:var(--sans,"Public Sans",system-ui,sans-serif)}
+  table.ledger .r-tag{grid-area:tag; align-self:center}
+  table.ledger .r-ctl{grid-area:ctl}
+  table.ledger .r-tag:empty{display:none}
+  table.ledger td.empty{grid-column:1/-1}
+  table.ledger .tog, table.ledger .inc{width:34px; height:34px}
+  table.ledger .ttb{height:34px}
+}
 /* ---------- forecast ---------- */
 .fcbar{display:flex; gap:10px; align-items:center; margin:22px 0 12px; flex-wrap:wrap}
 .fcbal{display:flex; align-items:center; gap:9px; background:var(--surface);
@@ -863,7 +891,7 @@ function render(){
       </div>
       <button class="chip" id="allMonths" aria-pressed="${S.all}">All months</button>
     </div>
-    <div class="scroll"><table>
+    <div class="scroll"><table class="ledger">
       <thead><tr>
         <th>Date</th><th>Type</th><th>Description</th>
         <th class="r-amt">Amount</th><th class="r-cnt">Counted</th><th>Rule</th><th></th>
@@ -923,8 +951,8 @@ function renderRows(){
         <td class="r-desc">${hl(r.c, q)}${r.t === "Check Paid" ? chkBadge(checkNo(r), r.a) : ""}</td>
         <td class="r-amt num ${r.a < 0 ? "neg" : "pos"}">${money(r.a)}</td>
         <td class="r-cnt num">${c.f ? money(c.f) : '<span style="color:var(--ink-3)">—</span>'}</td>
-        <td>${tag}</td>
-        <td>${rowControl(r, c)}</td>
+        <td class="r-tag">${tag}</td>
+        <td class="r-ctl">${rowControl(r, c)}</td>
       </tr>`;
     }).join("");
     body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => setFlag(b.dataset.m, +b.dataset.i, "x")));
