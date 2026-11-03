@@ -1308,17 +1308,18 @@ async function renderBanks(){
     const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
     return `<option value="${k}">${esc(monthName(k))}</option>`;
   }).join("");
-  let acct = "";   // remembered on his phone only: this repo is public, so no bank names in it
+  // The account names come from the server (this repo is public): one button each.
+  const accts = b.accounts || [];
   try { acct = localStorage.getItem("tl.upacct") || acct; } catch(e){}
   main.innerHTML = `<div style="max-width:640px;padding:8px 2px">
     <h2 style="margin:0 0 6px">Add a statement</h2>
     <p style="color:var(--ink-3);margin:0 0 12px">For a bank that won&rsquo;t link, or the bank&rsquo;s own statement with check images.</p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      <select id="upMonth" style="padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit">${monthOpts}</select>
-      <input id="upAcct" value="${esc(acct)}" placeholder="Account, e.g. card name and last four" style="flex:1;min-width:180px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit">
-    </div>
-    <label class="btn primary" style="display:block;text-align:center;padding:14px;font-size:16px;cursor:pointer">Choose the PDF<input id="upFile" type="file" accept="application/pdf,.pdf" hidden></label>
-    <p style="color:var(--ink-3);font-size:12.5px;margin:8px 0 0">In the bank&rsquo;s app: Share &rarr; Save to Files. Then Choose the PDF &rarr; Browse.
+    <select id="upMonth" style="padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit;margin-bottom:10px">${monthOpts}</select>
+    ${accts.map((n, k) => {
+      return `<label class="btn primary" style="display:block;text-align:center;padding:14px;font-size:16px;cursor:pointer;margin-bottom:8px">${esc(n)}: choose the PDF
+        <input type="file" accept="application/pdf,.pdf" hidden data-acct="${k}"></label>`;
+    }).join("")}
+    <p style="color:var(--ink-3);font-size:12.5px;margin:8px 0 0">In the bank&rsquo;s app: Share &rarr; Save to Files. Then tap that bank &rarr; Browse.
       (iPhone won&rsquo;t pass a PDF to a web page by copy and paste.)</p>
     <p id="upMsg" style="margin:10px 0 0;color:var(--ink-2)">${esc(S.upNote || "")}</p>
     ${upList}
@@ -1346,13 +1347,10 @@ async function renderBanks(){
   const reload = async () => { S.banks = null; render(); };
   S.upNote = "";
   const upMsg = t => { $("#upMsg").textContent = t; };
-  const upload = async file => {
+  const upload = async (file, label) => {
     if (!file) return;
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
     if (!isPdf){ upMsg("That isn’t a PDF. Copy the statement PDF itself."); return; }
-    const label = $("#upAcct").value.trim();
-    if (!label){ upMsg("Name the account first."); return; }
-    try { localStorage.setItem("tl.upacct", label); } catch(e){}
     upMsg("Saving " + (file.name || "the PDF") + "…");
     try {
       const buf = new Uint8Array(await file.arrayBuffer());
@@ -1362,7 +1360,7 @@ async function renderBanks(){
       reload();
     } catch(e){ upMsg(e.message); }
   };
-  $("#upFile").onchange = e => upload(e.target.files[0]);
+  main.querySelectorAll("[data-acct]").forEach(x => x.onchange = e => upload(e.target.files[0], accts[+x.dataset.acct]));
   main.querySelectorAll("[data-updel]").forEach(x => x.onclick = async () => {
     if (!confirm("Remove this PDF?")) return;
     try { await api("/statements/uploads/" + x.dataset.updel, {method:"DELETE"}); reload(); }
