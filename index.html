@@ -913,11 +913,11 @@ function render(){
       <tbody id="rows"></tbody>
     </table></div>`;
 
-  $("#q").addEventListener("input", e => { S.q = e.target.value; renderRows(); });
+  $("#q").addEventListener("input", e => { S.q = e.target.value; S.keep = null; renderRows(); });
   $("#allMonths").addEventListener("click", () => { S.all = !S.all; render(); });
   $("#btnPay").addEventListener("click", payPanel);
   document.querySelectorAll("[data-filter]").forEach(b =>
-    b.addEventListener("click", () => { S.filter = b.dataset.filter; render(); }));
+    b.addEventListener("click", () => { S.filter = b.dataset.filter; S.keep = null; render(); }));
   renderRows();
 }
 
@@ -940,6 +940,9 @@ function renderRows(){
                     : m.rows.map((r,i) => ({...r, _id:m.id, _i:i}));
   const q = S.q.trim().toLowerCase();
   const list = src.filter(r => {
+    // The row he just tapped stays put until he changes the filter, the search
+    // or the month, so a filter never makes it vanish under his thumb.
+    if (S.keep && S.keep === r._id + "|" + r._i) return true;
     const c = classify(r, S.rules);
     if (S.filter === "on"   && c.kind !== "on")   return false;
     if (S.filter === "off"  && !r.x)              return false;
@@ -969,7 +972,14 @@ function renderRows(){
         <td class="r-ctl">${rowControl(r, c)}</td>
       </tr>`;
     }).join("");
-    body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => setFlag(b.dataset.m, +b.dataset.i, "x")));
+    body.querySelectorAll(".tog").forEach(b => b.addEventListener("click", () => {
+      S.keep = b.dataset.m + "|" + b.dataset.i;
+      if (b.getAttribute("aria-pressed") === "true") return setFlag(b.dataset.m, +b.dataset.i, "x");
+      const m = S.months.find(x => x.id === b.dataset.m);
+      const row = m && m.rows[+b.dataset.i];
+      if (row) excludePanel(b.dataset.m, +b.dataset.i, row);
+    }));
+    body.querySelectorAll(".ttb, .inc").forEach(b => b.addEventListener("click", () => { S.keep = b.dataset.m + "|" + b.dataset.i; }));
     body.querySelectorAll(".ttb").forEach(b => b.addEventListener("click", () => toggleTithe(b.dataset.m, +b.dataset.i)));
     body.querySelectorAll(".inc").forEach(b => b.addEventListener("click", () => {
       const m = S.months.find(x => x.id === b.dataset.m);
@@ -998,7 +1008,7 @@ function renderMonths(){
       })()}</button>`;
   }).join("");
   el.querySelectorAll(".mtab").forEach(b =>
-    b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; render(); }));
+    b.addEventListener("click", () => { S.cur = b.dataset.id; S.all = false; S.keep = null; render(); }));
 }
 
 /** Set or clear one flag on one row: "x" to leave out, "i" to count by hand. */
@@ -1072,6 +1082,37 @@ function listFor(type){
 }
 
 /** Count this row — once, or from now on. */
+/**
+ * Leaving a row out asks why first. He tapped the box on a $1,500 church check
+ * meaning "this was a tithe", and with Counted on the row just vanished, leaving
+ * the Tithe? button on a row he could no longer see.
+ */
+function excludePanel(monthId, i, row){
+  const s = panel("Leave this one out", `
+    <p class="hint">${esc(row.c)}<br><span style="color:var(--ink-3)">${esc(row.t)} &middot; ${money(row.a)}</span></p>
+    <div class="pfoot" style="flex-wrap:wrap">
+      <button class="btn" type="button" data-close>Cancel</button>
+      <button class="btn" type="button" id="xjust">Just leave it out</button>
+      <button class="btn primary" type="button" id="xtithe">It was a tithe</button>
+    </div>`);
+  s.querySelector("#xjust").addEventListener("click", () => { s.remove(); setFlag(monthId, i, "x", 1); });
+  s.querySelector("#xtithe").addEventListener("click", () => {
+    s.remove();
+    const m = S.months.find(x => x.id === monthId);
+    if (!m) return;
+    // The payment form, filled in from the row. Saving it leaves the row out
+    // and marks it a tithe in one go (a check is also matched by number).
+    payPanel({amount:Math.round(Math.abs(Number(row.a) || 0) * 100) / 100, check:checkNo(row),
+      date:rowYmd(m.key, row.d), row:rowSig(m.key, row), src:"ledger"}, async () => {
+      const now = m.rows[i];
+      if (!now || (now.x && now.tt)) return;
+      m.rows = m.rows.map((r,k) => k === i ? {...r, x:1, i:0, tt:1} : r);
+      try { await api("/months/" + monthId, {method:"PUT", body:{label:m.label, rows:m.rows}}); }
+      catch(e){ if (e.message !== "Locked") alert("The payment saved, but marking the row didn't. " + e.message); }
+    });
+  });
+}
+
 function includePanel(monthId, i, row){
   const list = listFor(row.t);
   const s = panel("Count this one", `
