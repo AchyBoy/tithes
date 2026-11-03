@@ -1284,8 +1284,49 @@ async function renderBanks(){
         <button class="btn" style="padding:2px 8px;font-size:12px;margin-left:8px" data-unlink="${esc(x.id)}">Remove</button></li>`).join("")
     : '<li style="color:var(--ink-3)">No bank linked yet.</li>';
   const ready = b.ready;
+  // A bank that will not link through Plaid comes in by hand: copy
+  // the PDF in the bank's app, paste it here, Send (11-03). Unsent, it rides with
+  // the linked banks on the 5th. Either way it lives only in the expiring link after that.
+  const ups = b.uploads || [];
+  const byMonth = {};
+  ups.forEach(u => (byMonth[u.month] = byMonth[u.month] || []).push(u));
+  const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  const sentAlready = k => st.lastSent && st.lastSent >= k;
+  const upList = Object.keys(byMonth).sort().map(k => `<div class="upm" style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0">
+      <b>${esc(monthName(k))}</b>
+      ${byMonth[k].map(u => `<div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <span style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(u.label)} <small style="color:var(--ink-3)">${kb(u.bytes)}</small></span>
+        <button class="btn" style="padding:2px 8px;font-size:12px" data-updel="${u.id}">Remove</button></div>`).join("")}
+      <p style="color:var(--ink-3);font-size:12.5px;margin:8px 0">${sentAlready(k)
+        ? "This month already went out, so this waits for you to send it."
+        : "Goes out with the linked banks on the 5th unless you send it now."}</p>
+      <button class="btn primary" data-upsend="${k}" ${st.to ? "" : "disabled"}>Send to ${esc(st.to || "the CPA")} now</button>
+    </div>`).join("");
+  const last = st.nextMonth || "";
+  const monthOpts = [0,1,2,3,4,5].map(n => {
+    const d = new Date(Number(last.slice(0,4)), Number(last.slice(5,7)) - 1 - n, 1);
+    const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+    return `<option value="${k}">${esc(monthName(k))}</option>`;
+  }).join("");
+  let acct = "";   // remembered on his phone only: this repo is public, so no bank names in it
+  try { acct = localStorage.getItem("tl.upacct") || acct; } catch(e){}
   main.innerHTML = `<div style="max-width:640px;padding:8px 2px">
-    <h2 style="margin:0 0 6px">Banks</h2>
+    <h2 style="margin:0 0 6px">Add a statement</h2>
+    <p style="color:var(--ink-3);margin:0 0 12px">For a bank that won&rsquo;t link. Copy the PDF in the bank&rsquo;s app, then paste it here.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <select id="upMonth" style="padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit">${monthOpts}</select>
+      <input id="upAcct" value="${esc(acct)}" placeholder="Account, e.g. card name and last four" style="flex:1;min-width:180px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit">
+    </div>
+    <textarea id="upPaste" rows="2" placeholder="Tap here, then Paste" inputmode="none"
+      style="width:100%;padding:14px;border:1.5px dashed var(--accent-line);border-radius:10px;background:var(--surface);color:var(--ink);font:inherit;font-size:16px;resize:none;text-align:center;height:64px;min-height:0"></textarea>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn" id="upPasteBtn">Paste</button>
+      <label class="btn" style="cursor:pointer">Choose file<input id="upFile" type="file" accept="application/pdf,.pdf" hidden></label>
+    </div>
+    <p id="upMsg" style="margin:10px 0 0;color:var(--ink-2)">${esc(S.upNote || "")}</p>
+    ${upList}
+
+    <h2 style="margin:28px 0 6px">Banks</h2>
     <p style="color:var(--ink-3);margin:0 0 12px">Linked through Plaid, read only.</p>
     <ul style="padding-left:18px;margin:0 0 12px">${banks}</ul>
     <button class="btn primary" id="btnLink" ${ready ? "" : "disabled"}>Link a bank</button>
@@ -1306,6 +1347,54 @@ async function renderBanks(){
 
   const msg = t => { $("#cpaMsg").textContent = t; };
   const reload = async () => { S.banks = null; render(); };
+  S.upNote = "";
+  const upMsg = t => { $("#upMsg").textContent = t; };
+  const upload = async file => {
+    if (!file) return;
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    if (!isPdf){ upMsg("That isn’t a PDF. Copy the statement PDF itself."); return; }
+    const label = $("#upAcct").value.trim();
+    if (!label){ upMsg("Name the account first."); return; }
+    try { localStorage.setItem("tl.upacct", label); } catch(e){}
+    upMsg("Saving " + (file.name || "the PDF") + "…");
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 32768) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 32768));
+      await api("/statements/uploads", {method:"POST", body:{month: $("#upMonth").value, label, filename: file.name || "", pdf: btoa(bin)}});
+      reload();
+    } catch(e){ upMsg(e.message); }
+  };
+  $("#upPaste").addEventListener("paste", e => {
+    e.preventDefault();
+    const f = [...(e.clipboardData?.files || [])][0]
+      || [...(e.clipboardData?.items || [])].map(i => i.kind === "file" ? i.getAsFile() : null).find(Boolean);
+    if (f) upload(f);
+    else upMsg("Nothing to save in what you pasted. In the bank’s app, share the PDF and pick Copy, or use Choose file.");
+  });
+  $("#upPasteBtn").onclick = async () => {
+    try {
+      for (const it of await navigator.clipboard.read()){
+        const t = it.types.find(x => /pdf/i.test(x));
+        if (t){ const blob = await it.getType(t); return upload(new File([blob], "statement.pdf", {type:"application/pdf"})); }
+      }
+      upMsg("No PDF on the clipboard. Tap the box above and Paste, or use Choose file.");
+    } catch(e){ upMsg("Tap the box above and choose Paste, or use Choose file."); }
+  };
+  $("#upFile").onchange = e => upload(e.target.files[0]);
+  main.querySelectorAll("[data-updel]").forEach(x => x.onclick = async () => {
+    if (!confirm("Remove this PDF?")) return;
+    try { await api("/statements/uploads/" + x.dataset.updel, {method:"DELETE"}); reload(); }
+    catch(e){ upMsg(e.message); }
+  });
+  main.querySelectorAll("[data-upsend]").forEach(x => x.onclick = async () => {
+    if (!confirm("Send " + monthName(x.dataset.upsend) + " to " + st.to + " now?")) return;
+    x.disabled = true; x.textContent = "Sending…";
+    try {
+      const r = await api("/statements/uploads/send", {method:"POST", body:{month: x.dataset.upsend}});
+      S.upNote = "Sent to " + r.sentTo + ". You’ll get a blind copy, and an email when it’s downloaded."; reload();
+    } catch(e){ x.disabled = false; x.textContent = "Send now"; upMsg(e.message); }
+  });
   $("#btnLink").onclick = () => linkBank();
   main.querySelectorAll("[data-unlink]").forEach(x => x.onclick = async () => {
     if (!confirm("Remove this bank? Statements stop including it.")) return;
