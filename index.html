@@ -1312,17 +1312,14 @@ async function renderBanks(){
   try { acct = localStorage.getItem("tl.upacct") || acct; } catch(e){}
   main.innerHTML = `<div style="max-width:640px;padding:8px 2px">
     <h2 style="margin:0 0 6px">Add a statement</h2>
-    <p style="color:var(--ink-3);margin:0 0 12px">For a bank that won&rsquo;t link. Copy the PDF in the bank&rsquo;s app, then paste it here.</p>
+    <p style="color:var(--ink-3);margin:0 0 12px">For a bank that won&rsquo;t link, or the bank&rsquo;s own statement with check images.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <select id="upMonth" style="padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit">${monthOpts}</select>
       <input id="upAcct" value="${esc(acct)}" placeholder="Account, e.g. card name and last four" style="flex:1;min-width:180px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit">
     </div>
-    <textarea id="upPaste" rows="2" placeholder="Tap here, then Paste" inputmode="none"
-      style="width:100%;padding:14px;border:1.5px dashed var(--accent-line);border-radius:10px;background:var(--surface);color:var(--ink);font:inherit;font-size:16px;resize:none;text-align:center;height:64px;min-height:0"></textarea>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-      <button class="btn" id="upPasteBtn">Paste</button>
-      <label class="btn" style="cursor:pointer">Choose file<input id="upFile" type="file" accept="application/pdf,.pdf" hidden></label>
-    </div>
+    <label class="btn primary" style="display:block;text-align:center;padding:14px;font-size:16px;cursor:pointer">Choose the PDF<input id="upFile" type="file" accept="application/pdf,.pdf" hidden></label>
+    <p style="color:var(--ink-3);font-size:12.5px;margin:8px 0 0">In the bank&rsquo;s app: Share &rarr; Save to Files. Then Choose the PDF &rarr; Browse.
+      (iPhone won&rsquo;t pass a PDF to a web page by copy and paste.)</p>
     <p id="upMsg" style="margin:10px 0 0;color:var(--ink-2)">${esc(S.upNote || "")}</p>
     ${upList}
 
@@ -1364,22 +1361,6 @@ async function renderBanks(){
       await api("/statements/uploads", {method:"POST", body:{month: $("#upMonth").value, label, filename: file.name || "", pdf: btoa(bin)}});
       reload();
     } catch(e){ upMsg(e.message); }
-  };
-  $("#upPaste").addEventListener("paste", e => {
-    e.preventDefault();
-    const f = [...(e.clipboardData?.files || [])][0]
-      || [...(e.clipboardData?.items || [])].map(i => i.kind === "file" ? i.getAsFile() : null).find(Boolean);
-    if (f) upload(f);
-    else upMsg("Nothing to save in what you pasted. In the bank’s app, share the PDF and pick Copy, or use Choose file.");
-  });
-  $("#upPasteBtn").onclick = async () => {
-    try {
-      for (const it of await navigator.clipboard.read()){
-        const t = it.types.find(x => /pdf/i.test(x));
-        if (t){ const blob = await it.getType(t); return upload(new File([blob], "statement.pdf", {type:"application/pdf"})); }
-      }
-      upMsg("No PDF on the clipboard. Tap the box above and Paste, or use Choose file.");
-    } catch(e){ upMsg("Tap the box above and choose Paste, or use Choose file."); }
   };
   $("#upFile").onchange = e => upload(e.target.files[0]);
   main.querySelectorAll("[data-updel]").forEach(x => x.onclick = async () => {
