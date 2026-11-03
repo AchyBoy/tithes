@@ -297,6 +297,14 @@ textarea:focus{outline:none; border-color:var(--accent)}
    every row becomes a card: description and amount, then date, type and what
    counted, then the rule and the buttons. */
 @media (max-width:640px){
+  /* The tab buttons (Tithes, Ledger, Books...) ran 565px wide, so the whole page
+     slid sideways on his phone. They scroll on their own now, and the page is
+     clipped to the screen so nothing else can do it again. */
+  html, body{overflow-x:clip; max-width:100%}
+  .acts{max-width:100%; min-width:0}
+  .acts .seg{display:flex; max-width:100%; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch}
+  .acts .seg::-webkit-scrollbar{display:none}
+  .acts .seg .btn{white-space:nowrap; flex:none}
   table.ledger{min-width:0}
   table.ledger thead{display:none}
   table.ledger, table.ledger tbody{display:block}
