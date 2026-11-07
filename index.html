@@ -291,6 +291,7 @@ textarea:focus{outline:none; border-color:var(--accent)}
 @media (max-width:860px){
   .summary{grid-template-columns:1fr 1fr}
   .owed{grid-column:1/-1}
+  .loan .summary .cell:last-child{grid-column:1/-1}
 }
 /* The ledger is seven columns and 820px wide, which on a phone meant sideways
    scrolling past the amount to reach the rule and buttons (11-02). Under 640px
@@ -2358,7 +2359,6 @@ function renderLoans(){
     const seenRows = F.rows.slice().reverse().map(p => `
       <tr>
         <td>${MON3[p.date.getMonth()]} ${p.date.getDate()}${p.bank ? "" : '<br><small class="why">autopay, not in the bank yet</small>'}</td>
-        <td class="r-amt num">${money(p.amount)}</td>
         <td class="r-amt num">${money(p.int)}</td>
         <td class="r-amt num">${money(p.prin)}</td>
         <td class="r-amt num bal">${money(p.bal)}</td>
@@ -2385,7 +2385,7 @@ function renderLoans(){
       </section>
       <p class="hint" style="margin-top:10px">Counted from the ${lshort(ld(L.anchor.date))} statement (${money(Number(L.anchor.balance))}), then each payment your bank shows. Off by a few dollars? A payment that posts a day later costs a day of interest. Type in the next statement and it lines back up.</p>
       ${seenRows ? `<div class="scroll"><table class="fctab">
-        <thead><tr><th>Paid</th><th class="r-amt">Payment</th><th class="r-amt">Interest</th><th class="r-amt">Principal</th><th class="r-amt">Owed after</th></tr></thead>
+        <thead><tr><th>Paid</th><th class="r-amt">Interest</th><th class="r-amt">Principal</th><th class="r-amt">Owed after</th></tr></thead>
         <tbody>${seenRows}</tbody></table></div>` : '<p class="note">No payments since that statement yet.</p>'}
     </section>`;
   };
