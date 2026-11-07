@@ -423,6 +423,7 @@ tr.under td{background:var(--park-soft); color:var(--warn)}
           ><button class="btn" data-view="books">Books</button
           ><button class="btn" data-view="recurring">Recurring</button
           ><button class="btn" data-view="forecast">Forecast</button
+          ><button class="btn" data-view="loans">Loans</button
           ><button class="btn" data-view="cpa">Bookkeeper</button
           ><button class="btn" data-view="banks">Banks</button>
         </span>
@@ -657,7 +658,7 @@ async function loadAll(){
   // The forecast's two extra calls are allowed to fail on their own. They came
   // later than the rest of the page and an older backend answers 404 to both;
   // losing the ledger over a missing forecast would be a poor trade.
-  const [m, r, c, x, f, inv, nm, ck, py, mr, qc, pm, rg] = await Promise.all([
+  const [m, r, c, x, f, inv, nm, ck, py, mr, qc, pm, rg, ln] = await Promise.all([
     api("/months"), api("/config/rules"), api("/config/categories"), api("/config/recurring"),
     api("/config/forecast").catch(() => ({})), api("/invoices").catch(() => ({})),
     // Not allowed to fail quietly like the two above it. An empty payee table
@@ -672,7 +673,9 @@ async function loadAll(){
     api("/config/payments").catch(() => ({})),
     // JobHub's own record of the cheques it wrote: crew pay and supplier
     // payments, with job, phase and PO. Additive, so it may not take the page down.
-    api("/cheques").catch(() => ({}))]);
+    api("/cheques").catch(() => ({})),
+    api("/config/loans").catch(() => ({}))]);
+  S.loans = (((ln && (ln.loans || ln.value)) || {}).list) || [];
   S.invoices = (inv && inv.invoices) || [];
   const pv = (pm && (pm.payments || pm.value)) || {};
   S.pays = pv.list || [];
@@ -854,6 +857,7 @@ function render(){
   }
   if (S.view === "forecast") return renderForecast();
   if (S.view === "tithes") return renderTithes();
+  if (S.view === "loans") return renderLoans();
   if (S.view === "banks") return renderBanks();
   const m = S.months.find(x => x.id === S.cur);
   if (!m){
@@ -2269,6 +2273,178 @@ async function saveForecast(next){
     S.fc = before; renderForecast();
     if (e.message !== "Locked") alert("That didn't save. " + e.message);
   }
+}
+
+/* ============ loans ============ */
+// A loan is kept from the last statement he typed in (the anchor), then walked
+// forward one payment at a time the way the lender does it: interest is the
+// balance times the daily rate times the days since the last payment, and the
+// rest of the payment comes off principal. Payments come from his bank rows;
+// a month not imported yet whose due day has passed counts as autopay, marked.
+const ld = s => { const [y,m,d] = String(s).split("-").map(Number); return new Date(y, m-1, d); };
+const lymd = d => d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+const ldays = (a, b) => Math.round((b - a) / 86400000);
+const r2 = n => Math.round(n * 100) / 100;
+const lshort = d => MON3[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
+
+function loanPayments(L){
+  const key = String(L.match || "").toLowerCase().trim();
+  const after = ld(L.anchor.date), out = [], seen = new Set();
+  if (key) S.months.forEach(m => {
+    const [ky, km] = m.key.split("-").map(Number);
+    m.rows.forEach(r => {
+      if (!String(r.c || "").toLowerCase().includes(key) || !r.d) return;
+      const [mm, dd] = String(r.d).split("/").map(Number);
+      const date = new Date(mm - km > 6 ? ky - 1 : ky, mm - 1, dd);
+      const id = lymd(date) + "|" + Math.abs(r.a);
+      if (date <= after || seen.has(id)) return;
+      seen.add(id);
+      out.push({date, amount: Math.abs(Number(r.a)), bank: true});
+    });
+  });
+  // Months the ledger has not reached yet: autopay assumed on the due day.
+  const lastKey = S.months.map(m => m.key).sort().pop() || "0000-00";
+  const today = new Date(); today.setHours(0,0,0,0);
+  for (let d = new Date(after.getFullYear(), after.getMonth() + 1, L.day); d <= today;
+       d = new Date(d.getFullYear(), d.getMonth() + 1, L.day)){
+    const k = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+    if (k > lastKey && !out.some(p => p.date.getFullYear() === d.getFullYear() && p.date.getMonth() === d.getMonth()))
+      out.push({date: d, amount: Number(L.payment), bank: false});
+  }
+  return out.sort((a,b) => a.date - b.date);
+}
+
+function loanFigure(L){
+  const dr = Number(L.rate) / 100 / 365;
+  let bal = Number(L.anchor.balance), last = ld(L.anchor.date);
+  let ytdYear = Number(L.anchor.ytdYear) || last.getFullYear(), ytd = Number(L.anchor.ytd) || 0;
+  const rows = loanPayments(L).map(p => {
+    const int = r2(bal * dr * ldays(last, p.date));
+    const prin = r2(p.amount - int);
+    bal = r2(bal - prin); last = p.date;
+    if (p.date.getFullYear() !== ytdYear){ ytdYear = p.date.getFullYear(); ytd = 0; }
+    ytd = r2(ytd + int);
+    return {...p, int, prin, bal};
+  });
+  const today = new Date(); today.setHours(0,0,0,0);
+  const accrued = r2(bal * dr * Math.max(0, ldays(last, today)));
+  // Forward at the regular payment until it is gone.
+  let b = bal, l = last, n = 0, intLeft = 0, d = new Date(last.getFullYear(), last.getMonth() + 1, L.day);
+  const next = {date: d, int: r2(bal * dr * ldays(last, d))};
+  next.prin = r2(L.payment - next.int);
+  while (b > 0 && n < 600){
+    const int = r2(b * dr * ldays(l, d));
+    intLeft += int; b = r2(b + int - L.payment); n++; l = d;
+    d = new Date(d.getFullYear(), d.getMonth() + 1, L.day);
+  }
+  return {rows, bal, last, accrued, payoff: r2(bal + accrued), ytd, ytdYear,
+          next, left: n, intLeft: r2(intLeft), done: l, lastPay: r2(L.payment + b)};
+}
+
+async function saveLoans(list){
+  const before = S.loans;
+  S.loans = list; renderLoans();
+  try { await api("/config/loans", {method:"PUT", body:{loans:{list}}}); }
+  catch(e){
+    S.loans = before; renderLoans();
+    if (e.message !== "Locked") alert("That didn't save. " + e.message);
+  }
+}
+
+function renderLoans(){
+  const main = $("#main");
+  const card = L => {
+    const F = loanFigure(L);
+    const seenRows = F.rows.slice().reverse().map(p => `
+      <tr>
+        <td>${MON3[p.date.getMonth()]} ${p.date.getDate()}${p.bank ? "" : '<br><small class="why">autopay, not in the bank yet</small>'}</td>
+        <td class="r-amt num">${money(p.amount)}</td>
+        <td class="r-amt num">${money(p.int)}</td>
+        <td class="r-amt num">${money(p.prin)}</td>
+        <td class="r-amt num bal">${money(p.bal)}</td>
+      </tr>`).join("");
+    return `
+    <section class="loan" data-loan="${esc(L.id)}" style="margin-top:26px">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap">
+        <h2 style="font-family:Newsreader,Georgia,serif; font-weight:500; font-size:24px; margin:0">${esc(L.name)}</h2>
+        <span><button class="btn" data-lstmt="${esc(L.id)}">Update from a statement</button>
+        <button class="btn" data-ledit="${esc(L.id)}">Edit</button></span>
+      </div>
+      <section class="summary" style="margin-top:12px">
+        <div class="cell owed">
+          <div class="k">Payoff today</div>
+          <div class="v num">${money(F.payoff)}</div>
+          <div class="sub">${money(F.bal)} principal + ${money(F.accrued)} interest since ${MON3[F.last.getMonth()]} ${F.last.getDate()}</div>
+        </div>
+        <div class="cell"><div class="k">Next payment</div><div class="v num">${money(L.payment)}</div>
+          <div class="sub" style="font-size:12px;color:var(--ink-2)">${lshort(F.next.date)}: ~${money(F.next.int)} interest, ${money(F.next.prin)} principal</div></div>
+        <div class="cell"><div class="k">Paid off</div><div class="v">${MON3[F.done.getMonth()]} ${F.done.getFullYear()}</div>
+          <div class="sub" style="font-size:12px;color:var(--ink-2)">${F.left} payments left, ${money(F.intLeft)} more interest</div></div>
+        <div class="cell"><div class="k">Interest ${F.ytdYear}</div><div class="v num">${money(F.ytd)}</div>
+          <div class="sub" style="font-size:12px;color:var(--ink-2)">${L.rate}% APR</div></div>
+      </section>
+      <p class="hint" style="margin-top:10px">Counted from the ${lshort(ld(L.anchor.date))} statement (${money(Number(L.anchor.balance))}), then each payment your bank shows. Off by a few dollars? A payment that posts a day later costs a day of interest. Type in the next statement and it lines back up.</p>
+      ${seenRows ? `<div class="scroll"><table class="fctab">
+        <thead><tr><th>Paid</th><th class="r-amt">Payment</th><th class="r-amt">Interest</th><th class="r-amt">Principal</th><th class="r-amt">Owed after</th></tr></thead>
+        <tbody>${seenRows}</tbody></table></div>` : '<p class="note">No payments since that statement yet.</p>'}
+    </section>`;
+  };
+  main.innerHTML = `
+    ${(S.loans || []).map(card).join("") || '<p class="note" style="margin-top:26px">No loans yet.</p>'}
+    <p style="margin-top:22px"><button class="btn" id="laddBtn">Add a loan</button></p>`;
+  main.querySelectorAll("[data-lstmt]").forEach(b => b.addEventListener("click", () => loanForm(b.dataset.lstmt, "stmt")));
+  main.querySelectorAll("[data-ledit]").forEach(b => b.addEventListener("click", () => loanForm(b.dataset.ledit, "edit")));
+  $("#laddBtn").addEventListener("click", () => loanForm(null, "edit"));
+}
+
+function loanForm(id, mode){
+  const L = (S.loans || []).find(x => x.id === id) || {id: "l" + Date.now(), name:"", rate:"", payment:"", day:"", match:"",
+    anchor:{date: lymd(new Date()), balance:"", ytd:"", ytdYear: new Date().getFullYear()}};
+  const f = (k, label, v, type = "text", step) => `<label style="display:block; margin:0 0 12px">
+      <span class="hint" style="display:block; margin:0 0 4px">${label}</span>
+      <input name="${k}" type="${type}" ${step ? `step="${step}" inputmode="decimal"` : ""} value="${esc(v)}" style="width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:var(--r); background:var(--paper); color:var(--ink); font:inherit">
+    </label>`;
+  const stmt = `
+      ${f("adate", "Statement date (the last payment on it)", L.anchor.date, "date")}
+      ${f("abal", "Balance after that payment", L.anchor.balance, "number", "0.01")}
+      ${f("aytd", "Interest paid this year, from the statement (optional)", L.anchor.ytd, "number", "0.01")}`;
+  const body = mode === "stmt" ? stmt : `
+      ${f("name", "Name", L.name)}
+      ${f("rate", "APR %", L.rate, "number", "0.001")}
+      ${f("payment", "Monthly payment", L.payment, "number", "0.01")}
+      ${f("day", "Due day of the month", L.day, "number", "1")}
+      ${f("match", "Word in the bank description (to find the payments)", L.match)}
+      ${stmt}
+      ${S.loans.some(x => x.id === L.id) ? '<p><button class="btn" type="button" id="ldel">Delete this loan</button></p>' : ""}`;
+  const s = document.createElement("div");
+  s.className = "scrim";
+  s.innerHTML = `<div class="panel" role="dialog" aria-modal="true" style="width:min(460px,100%)">
+    <div class="phead"><h2>${mode === "stmt" ? "Update from a statement" : (L.name ? "Edit loan" : "Add a loan")}</h2>
+      <button class="btn" type="button" id="lx">Close</button></div>
+    <form class="pbody" id="lform">${body}
+      <button class="btn primary" type="submit">Save</button></form></div>`;
+  document.body.appendChild(s);
+  s.querySelector("#lx").addEventListener("click", () => s.remove());
+  const del = s.querySelector("#ldel");
+  if (del) del.addEventListener("click", () => {
+    if (!confirm("Delete " + L.name + "?")) return;
+    s.remove(); saveLoans(S.loans.filter(x => x.id !== L.id));
+  });
+  s.querySelector("#lform").addEventListener("submit", e => {
+    e.preventDefault();
+    const v = n => { const el = e.target.elements[n]; return el ? el.value.trim() : null; };
+    const adate = v("adate");
+    const next = {...L, anchor: {date: adate, balance: Number(v("abal")),
+      ytd: v("aytd") === "" ? 0 : Number(v("aytd")), ytdYear: Number(String(adate).slice(0,4))}};
+    if (mode !== "stmt") Object.assign(next, {name: v("name") || "Loan", rate: Number(v("rate")),
+      payment: Number(v("payment")), day: Number(v("day")) || 1, match: v("match")});
+    if (!adate || !(next.anchor.balance > 0) || !(next.rate > 0) || !(next.payment > 0)){
+      alert("Fill in the date, balance, APR and payment."); return;
+    }
+    s.remove();
+    const list = (S.loans || []).filter(x => x.id !== next.id).concat(next);
+    saveLoans((S.loans || []).some(x => x.id === next.id) ? S.loans.map(x => x.id === next.id ? next : x) : list);
+  });
 }
 
 function renderForecast(){
